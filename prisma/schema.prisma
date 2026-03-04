@@ -1,0 +1,73 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum RenderStatus {
+  PENDING
+  PROCESSING
+  DONE
+  ERROR
+}
+
+enum CreditTxType {
+  PURCHASE
+  USAGE
+  BONUS
+  REFUND
+}
+
+model User {
+  id        String   @id @default(uuid())
+  name      String?
+  email     String   @unique
+  password  String
+  credits   Int      @default(0)
+
+  renders   Render[]
+  creditTxs CreditTransaction[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Render {
+  id                String       @id @default(uuid())
+  userId            String
+  user              User         @relation(fields: [userId], references: [id])
+
+  originalImageUrl  String
+  generatedImageUrl String?
+  prompt            String?
+
+  status            RenderStatus @default(PENDING)
+  creditsUsed       Int          @default(0)
+
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  @@index([userId, createdAt])
+}
+
+model CreditTransaction {
+  id        String       @id @default(uuid())
+  userId    String
+  user      User         @relation(fields: [userId], references: [id])
+
+  type      CreditTxType
+  amount    Int
+  meta      Json?
+
+  createdAt DateTime     @default(now())
+
+  @@index([userId, createdAt])
+}
