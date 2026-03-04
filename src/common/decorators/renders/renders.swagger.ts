@@ -45,3 +45,29 @@ export function SwaggerDeleteRender() {
     ApiResponse({ status: 404, description: 'Render não encontrado' }),
   );
 }
+
+export function SwaggerProcessRender() {
+  return applyDecorators(
+    ApiOperation({
+      summary: 'Process render',
+      description:
+        'Starts processing a render using AI and updates its status.',
+    }),
+
+    ApiParam({
+      name: 'id',
+      description: 'Render ID',
+      required: true,
+    }),
+
+    ApiResponse({
+      status: 200,
+      description: 'Render processed successfully',
+    }),
+
+    ApiResponse({
+      status: 404,
+      description: 'Render not found',
+    }),
+  );
+}

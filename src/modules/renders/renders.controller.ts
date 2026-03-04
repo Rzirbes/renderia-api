@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
   NotFoundException,
   Param,
   ParseUUIDPipe,
@@ -22,6 +23,7 @@ import {
   SwaggerDeleteRender,
   SwaggerGetRender,
   SwaggerListRenders,
+  SwaggerProcessRender,
   SwaggerRendersController,
 } from '../../common/decorators/renders/renders.swagger';
 
@@ -40,6 +42,18 @@ export class RendersController {
     @Body() dto: CreateRenderDto,
   ) {
     const render = await this.rendersService.create(req.user!.userId, dto);
+    return toRenderResponse(render);
+  }
+
+  @Post(':id/process')
+  @HttpCode(200)
+  @SwaggerProcessRender()
+  async process(
+    @Req() req: Request & { user?: JwtPayload },
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ) {
+    const render = await this.rendersService.process(req.user!.userId, id);
+    if (!render) throw new NotFoundException();
     return toRenderResponse(render);
   }
 

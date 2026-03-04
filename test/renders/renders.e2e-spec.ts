@@ -66,7 +66,7 @@ describe('Renders (e2e)', () => {
   const idMissing = '33333333-3333-3333-3333-333333333333';
 
   type RendersServiceMock = jest.Mocked<
-    Pick<RendersService, 'create' | 'list' | 'findById' | 'remove'>
+    Pick<RendersService, 'create' | 'list' | 'findById' | 'remove' | 'process'>
   >;
 
   let rendersServiceMock: RendersServiceMock;
@@ -77,6 +77,7 @@ describe('Renders (e2e)', () => {
       list: jest.fn(),
       findById: jest.fn(),
       remove: jest.fn(),
+      process: jest.fn(),
     };
 
     const moduleRef = await Test.createTestingModule({
@@ -107,6 +108,7 @@ describe('Renders (e2e)', () => {
     rendersServiceMock.list.mockReset();
     rendersServiceMock.findById.mockReset();
     rendersServiceMock.remove.mockReset();
+    rendersServiceMock.process.mockReset();
   });
 
   afterAll(async () => {
@@ -209,5 +211,70 @@ describe('Renders (e2e)', () => {
     await request(server).delete(`/renders/${idMissing}`).expect(404);
 
     expect(rendersServiceMock.remove).toHaveBeenCalledWith('u1', idMissing);
+  });
+
+  type ProcessResponse = RenderResponse;
+
+  it('POST /renders/:id/process processes render and is idempotent', async () => {
+    // 1) mock create -> retorna PENDING
+    rendersServiceMock.create.mockResolvedValueOnce(
+      mockRender({
+        id: id1,
+        originalImageUrl: 'https://picsum.photos/200/300',
+        prompt: 'blue hour',
+        status: RenderStatus.PENDING,
+        generatedImageUrl: null,
+      }),
+    );
+
+    const createRes = await request(server)
+      .post('/renders')
+      .send({
+        originalImageUrl: 'https://picsum.photos/200/300',
+        prompt: 'blue hour',
+      })
+      .expect(201);
+
+    const created = bodyAs<RenderResponse>(createRes);
+    expect(created.id).toBe(id1);
+
+    // 2) mock process 1x -> DONE
+    rendersServiceMock.process.mockResolvedValueOnce(
+      mockRender({
+        id: id1,
+        status: RenderStatus.DONE,
+        generatedImageUrl: `https://fake-cdn.renderia.local/renders/${id1}.png`,
+      }),
+    );
+
+    const p1Res = await request(server)
+      .post(`/renders/${id1}/process`)
+      .expect(200);
+    const p1 = bodyAs<ProcessResponse>(p1Res);
+
+    expect(rendersServiceMock.process).toHaveBeenCalledWith('u1', id1);
+
+    // se teu RenderResponse expõe status/url:
+    expect(p1.id).toBe(id1);
+    expect(p1.status).toBe(RenderStatus.DONE);
+    expect(typeof p1.generatedImageUrl).toBe('string');
+    expect(p1.generatedImageUrl?.length ?? 0).toBeGreaterThan(0);
+
+    // 3) mock process 2x -> DONE (idempotente)
+    rendersServiceMock.process.mockResolvedValueOnce(
+      mockRender({
+        id: id1,
+        status: RenderStatus.DONE,
+        generatedImageUrl: `https://fake-cdn.renderia.local/renders/${id1}.png`,
+      }),
+    );
+
+    const p2Res = await request(server)
+      .post(`/renders/${id1}/process`)
+      .expect(200);
+    const p2 = bodyAs<ProcessResponse>(p2Res);
+
+    expect(p2.status).toBe(RenderStatus.DONE);
+    expect(p2.generatedImageUrl).toBe(p1.generatedImageUrl);
   });
 });

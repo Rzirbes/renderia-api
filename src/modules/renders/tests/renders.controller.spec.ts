@@ -21,7 +21,7 @@ const toRenderResponseMock = toRenderResponse as unknown as jest.Mock<
 >;
 
 type RendersServiceMock = jest.Mocked<
-  Pick<RendersService, 'create' | 'list' | 'findById' | 'remove'>
+  Pick<RendersService, 'create' | 'list' | 'findById' | 'remove' | 'process'>
 >;
 
 describe('RendersController (unit)', () => {
@@ -39,6 +39,7 @@ describe('RendersController (unit)', () => {
       list: jest.fn(),
       findById: jest.fn(),
       remove: jest.fn(),
+      process: jest.fn(),
     };
 
     const moduleRef = await Test.createTestingModule({
@@ -176,6 +177,35 @@ describe('RendersController (unit)', () => {
       ).rejects.toBeInstanceOf(NotFoundException);
 
       expect(rendersServiceMock.remove).toHaveBeenCalledWith('u1', 'missing');
+    });
+  });
+
+  describe('process', () => {
+    it('calls service.process with userId and id and maps response', async () => {
+      const renderFromService = { id: 'r1', status: 'DONE' };
+      const mapped = { id: 'r1' } as RenderResponse;
+
+      rendersServiceMock.process.mockResolvedValueOnce(
+        renderFromService as never,
+      );
+      toRenderResponseMock.mockReturnValueOnce(mapped);
+
+      const result = await controller.process(makeReq('u1'), 'r1');
+
+      expect(rendersServiceMock.process).toHaveBeenCalledWith('u1', 'r1');
+      expect(toRenderResponseMock).toHaveBeenCalledWith(renderFromService);
+      expect(result).toBe(mapped);
+    });
+
+    it('throws NotFoundException when service returns null', async () => {
+      rendersServiceMock.process.mockResolvedValueOnce(null);
+
+      await expect(
+        controller.process(makeReq('u1'), 'missing'),
+      ).rejects.toBeInstanceOf(NotFoundException);
+
+      expect(rendersServiceMock.process).toHaveBeenCalledWith('u1', 'missing');
+      expect(toRenderResponseMock).not.toHaveBeenCalled();
     });
   });
 });

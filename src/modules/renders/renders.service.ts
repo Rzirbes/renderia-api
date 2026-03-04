@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Render } from '@prisma/client';
+import { Render, RenderStatus } from '@prisma/client';
 
 import { PrismaService } from '../../database/prisma/prisma.service';
 import { CreateRenderDto } from './dto/create-render.dto';
@@ -54,5 +54,37 @@ export class RendersService {
     });
 
     return res.count > 0;
+  }
+
+  async process(userId: string, id: string): Promise<Render | null> {
+    return this.prisma.$transaction(async (tx) => {
+      const render = await tx.render.findFirst({ where: { id, userId } });
+      if (!render) return null;
+
+      // idempotência
+      if (render.status === RenderStatus.DONE) return render;
+      if (render.status === RenderStatus.PROCESSING) return render;
+
+      // marca como PROCESSING
+      const processing = await tx.render.update({
+        where: { id: render.id },
+        data: { status: RenderStatus.PROCESSING },
+      });
+
+      // TODO: aqui entra Gemini / worker / queue.
+      // Por enquanto: gera URL fake determinística.
+      const fakeGeneratedUrl = `https://fake-cdn.renderia.local/renders/${processing.id}.png`;
+
+      // finaliza
+      const done = await tx.render.update({
+        where: { id: processing.id },
+        data: {
+          status: RenderStatus.DONE,
+          generatedImageUrl: fakeGeneratedUrl,
+        },
+      });
+
+      return done;
+    });
   }
 }
