@@ -17,15 +17,24 @@ import { CreateRenderDto } from './dto/create-render.dto';
 import { ListRendersDto } from './dto/list-renders.dto';
 import { toRenderResponse } from './dto/render-response.dto';
 import { RendersService } from './renders.service';
+import {
+  SwaggerCreateRender,
+  SwaggerDeleteRender,
+  SwaggerGetRender,
+  SwaggerListRenders,
+  SwaggerRendersController,
+} from '../../common/decorators/renders/renders.swagger';
 
 type JwtPayload = { userId: string; email: string };
 
+@SwaggerRendersController()
 @Controller('renders')
 @UseGuards(JwtAuthGuard)
 export class RendersController {
   constructor(private readonly rendersService: RendersService) {}
 
   @Post()
+  @SwaggerCreateRender()
   async create(
     @Req() req: Request & { user?: JwtPayload },
     @Body() dto: CreateRenderDto,
@@ -35,6 +44,7 @@ export class RendersController {
   }
 
   @Get()
+  @SwaggerListRenders()
   async list(
     @Req() req: Request & { user?: JwtPayload },
     @Query() query: ListRendersDto,
@@ -53,6 +63,7 @@ export class RendersController {
   }
 
   @Get(':id')
+  @SwaggerGetRender()
   async findOne(
     @Req() req: Request & { user?: JwtPayload },
     @Param('id', new ParseUUIDPipe()) id: string,
@@ -63,6 +74,7 @@ export class RendersController {
   }
 
   @Delete(':id')
+  @SwaggerDeleteRender()
   async remove(
     @Req() req: Request & { user?: JwtPayload },
     @Param('id', new ParseUUIDPipe()) id: string,
