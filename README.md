@@ -2,6 +2,14 @@
 
 Backend da plataforma **RenderIA**, um sistema que utiliza **Inteligência Artificial para gerar renderizações arquitetônicas a partir de imagens enviadas pelo usuário**.
 
+## Live API
+
+https://renderia-api.onrender.com
+
+## API Documentation
+
+https://renderia-api.onrender.com/docs
+
 A API é responsável por:
 
 - autenticação de usuários
