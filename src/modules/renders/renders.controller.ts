@@ -25,6 +25,8 @@ import {
   SwaggerListRenders,
   SwaggerProcessRender,
   SwaggerRendersController,
+  SwaggerCompleteRender,
+  SwaggerFailRender,
 } from '../../common/decorators/renders/renders.swagger';
 
 type JwtPayload = { userId: string; email: string };
@@ -53,6 +55,32 @@ export class RendersController {
     @Param('id', new ParseUUIDPipe()) id: string,
   ) {
     const render = await this.rendersService.process(req.user!.userId, id);
+    if (!render) throw new NotFoundException();
+    return toRenderResponse(render);
+  }
+
+  // ➕ novo: finaliza (simula worker)
+  @Post(':id/complete')
+  @HttpCode(200)
+  @SwaggerCompleteRender()
+  async complete(
+    @Req() req: Request & { user?: JwtPayload },
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ) {
+    const render = await this.rendersService.complete(req.user!.userId, id);
+    if (!render) throw new NotFoundException();
+    return toRenderResponse(render);
+  }
+
+  // ➕ novo: falha (simula worker)
+  @Post(':id/fail')
+  @HttpCode(200)
+  @SwaggerFailRender()
+  async fail(
+    @Req() req: Request & { user?: JwtPayload },
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ) {
+    const render = await this.rendersService.fail(req.user!.userId, id);
     if (!render) throw new NotFoundException();
     return toRenderResponse(render);
   }
