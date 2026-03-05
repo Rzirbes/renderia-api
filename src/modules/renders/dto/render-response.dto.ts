@@ -12,7 +12,7 @@ export type RenderResponse = {
   creditsUsed: number;
 
   // rastreabilidade
-  traceId: string;
+  traceId: string | null; // ✅ aqui
   clientRequestId: string | null;
   providerJobId: string | null;
   providerRequestId: string | null;
@@ -41,7 +41,7 @@ type RenderToResponseInput = {
   status: RenderStatus;
   creditsUsed: number;
 
-  traceId: string;
+  traceId: string | null; // ✅ aqui
   clientRequestId: string | null;
   providerJobId: string | null;
   providerRequestId: string | null;
@@ -68,7 +68,7 @@ export function toRenderResponse(r: RenderToResponseInput): RenderResponse {
     status: r.status,
     creditsUsed: r.creditsUsed,
 
-    traceId: r.traceId,
+    traceId: r.traceId, // ✅ agora compila
     clientRequestId: r.clientRequestId,
     providerJobId: r.providerJobId,
     providerRequestId: r.providerRequestId,
