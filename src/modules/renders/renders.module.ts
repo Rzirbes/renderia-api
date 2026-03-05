@@ -8,5 +8,6 @@ import { RendersService } from './renders.service';
 @Module({
   controllers: [RendersController],
   providers: [RendersService, PrismaService, CreditsService],
+  exports: [RendersService],
 })
 export class RendersModule {}

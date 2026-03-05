@@ -1,8 +1,7 @@
+// src/queue/queues.ts
 import { Queue } from 'bullmq';
+import { bullConnection } from 'src/queue/connection';
 
 export const rendersQueue = new Queue('renders', {
-  connection: {
-    host: 'localhost',
-    port: 6379,
-  },
+  connection: bullConnection,
 });
