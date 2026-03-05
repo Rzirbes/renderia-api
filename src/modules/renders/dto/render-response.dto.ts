@@ -41,7 +41,7 @@ type RenderToResponseInput = {
   status: RenderStatus;
   creditsUsed: number;
 
-  traceId: string | null; // ✅ aqui
+  traceId: string | null;
   clientRequestId: string | null;
   providerJobId: string | null;
   providerRequestId: string | null;
@@ -68,7 +68,7 @@ export function toRenderResponse(r: RenderToResponseInput): RenderResponse {
     status: r.status,
     creditsUsed: r.creditsUsed,
 
-    traceId: r.traceId, // ✅ agora compila
+    traceId: r.traceId,
     clientRequestId: r.clientRequestId,
     providerJobId: r.providerJobId,
     providerRequestId: r.providerRequestId,
