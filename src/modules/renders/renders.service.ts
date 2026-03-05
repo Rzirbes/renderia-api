@@ -16,6 +16,8 @@ export class RendersService {
         userId,
         originalImageUrl: dto.originalImageUrl,
         prompt: dto.prompt ?? null,
+        status: RenderStatus.PENDING,
+        generatedImageUrl: null,
       },
     });
   }
@@ -56,35 +58,70 @@ export class RendersService {
     return res.count > 0;
   }
 
+  /**
+   * Marca como PROCESSING (idempotente).
+   * NÃO finaliza aqui. Isso simula o "enqueue" / início de processamento.
+   */
   async process(userId: string, id: string): Promise<Render | null> {
     return this.prisma.$transaction(async (tx) => {
       const render = await tx.render.findFirst({ where: { id, userId } });
       if (!render) return null;
 
-      // idempotência
       if (render.status === RenderStatus.DONE) return render;
       if (render.status === RenderStatus.PROCESSING) return render;
 
-      // marca como PROCESSING
-      const processing = await tx.render.update({
+      return tx.render.update({
         where: { id: render.id },
         data: { status: RenderStatus.PROCESSING },
       });
+    });
+  }
 
-      // TODO: aqui entra Gemini / worker / queue.
-      // Por enquanto: gera URL fake determinística.
-      const fakeGeneratedUrl = `https://fake-cdn.renderia.local/renders/${processing.id}.png`;
+  /**
+   * "Worker" fake por enquanto:
+   * Finaliza o render se estiver em PROCESSING (ou PENDING, se quiser permitir).
+   */
+  async complete(userId: string, id: string): Promise<Render | null> {
+    return this.prisma.$transaction(async (tx) => {
+      const render = await tx.render.findFirst({ where: { id, userId } });
+      if (!render) return null;
 
-      // finaliza
-      const done = await tx.render.update({
-        where: { id: processing.id },
+      if (render.status === RenderStatus.DONE) return render;
+
+      if (
+        render.status !== RenderStatus.PROCESSING &&
+        render.status !== RenderStatus.PENDING
+      ) {
+        return render;
+      }
+
+      const fakeGeneratedUrl = `https://fake-cdn.renderia.local/renders/${render.id}.png`;
+
+      return tx.render.update({
+        where: { id: render.id },
         data: {
           status: RenderStatus.DONE,
           generatedImageUrl: fakeGeneratedUrl,
         },
       });
+    });
+  }
 
-      return done;
+  async fail(userId: string, id: string): Promise<Render | null> {
+    return this.prisma.$transaction(async (tx) => {
+      const render = await tx.render.findFirst({ where: { id, userId } });
+      if (!render) return null;
+
+      if (render.status === RenderStatus.DONE) return render;
+
+      return tx.render.update({
+        where: { id: render.id },
+        data: {
+          status: RenderStatus.ERROR,
+          // se você tiver campo errorMessage no schema, salva aqui:
+          // errorMessage: reason ?? null,
+        },
+      });
     });
   }
 }

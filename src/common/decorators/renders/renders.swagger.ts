@@ -49,9 +49,9 @@ export function SwaggerDeleteRender() {
 export function SwaggerProcessRender() {
   return applyDecorators(
     ApiOperation({
-      summary: 'Process render',
+      summary: 'Inicia o processamento de um render',
       description:
-        'Starts processing a render using AI and updates its status.',
+        'Marca o render como PROCESSING e envia para a fila de processamento.',
     }),
 
     ApiParam({
@@ -62,12 +62,63 @@ export function SwaggerProcessRender() {
 
     ApiResponse({
       status: 200,
-      description: 'Render processed successfully',
+      description: 'Render marcado como PROCESSING',
     }),
 
     ApiResponse({
       status: 404,
-      description: 'Render not found',
+      description: 'Render não encontrado',
+    }),
+  );
+}
+
+export function SwaggerCompleteRender() {
+  return applyDecorators(
+    ApiOperation({
+      summary: 'Finaliza o render',
+      description:
+        'Simula o worker finalizando o render e definindo status DONE.',
+    }),
+
+    ApiParam({
+      name: 'id',
+      description: 'Render ID',
+      required: true,
+    }),
+
+    ApiResponse({
+      status: 200,
+      description: 'Render finalizado com sucesso',
+    }),
+
+    ApiResponse({
+      status: 404,
+      description: 'Render não encontrado',
+    }),
+  );
+}
+
+export function SwaggerFailRender() {
+  return applyDecorators(
+    ApiOperation({
+      summary: 'Marca render como erro',
+      description: 'Simula falha no processamento e define status ERROR.',
+    }),
+
+    ApiParam({
+      name: 'id',
+      description: 'Render ID',
+      required: true,
+    }),
+
+    ApiResponse({
+      status: 200,
+      description: 'Render marcado como erro',
+    }),
+
+    ApiResponse({
+      status: 404,
+      description: 'Render não encontrado',
     }),
   );
 }
