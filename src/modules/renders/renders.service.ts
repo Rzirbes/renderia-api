@@ -1,23 +1,46 @@
 import { Injectable } from '@nestjs/common';
-import { Render, RenderStatus } from '@prisma/client';
+import { Prisma, Render, RenderEventType, RenderStatus } from '@prisma/client';
 
 import { PrismaService } from '../../database/prisma/prisma.service';
 import { CreateRenderDto } from './dto/create-render.dto';
 import { ListRendersDto } from './dto/list-renders.dto';
 import { PaginatedResult } from '../../common/pagination/paginated-result';
 
+type FailReason = {
+  code?: string;
+  message: string;
+  meta?: unknown;
+};
+
 @Injectable()
 export class RendersService {
   constructor(private readonly prisma: PrismaService) {}
 
   async create(userId: string, dto: CreateRenderDto): Promise<Render> {
+    if (dto.clientRequestId) {
+      const existing = await this.prisma.render.findFirst({
+        where: { userId, clientRequestId: dto.clientRequestId },
+      });
+      if (existing) return existing;
+    }
+
     return this.prisma.render.create({
       data: {
         userId,
         originalImageUrl: dto.originalImageUrl,
         prompt: dto.prompt ?? null,
+        creditsUsed: dto.creditsToUse ?? 0,
+        clientRequestId: dto.clientRequestId ?? null,
         status: RenderStatus.PENDING,
         generatedImageUrl: null,
+        events: {
+          create: {
+            type: RenderEventType.CREATED,
+            fromStatus: null,
+            toStatus: RenderStatus.PENDING,
+            message: 'Render criado',
+          },
+        },
       },
     });
   }
@@ -55,49 +78,118 @@ export class RendersService {
 
   /**
    * Enfileira/começa: PENDING -> PROCESSING
-   * Idempotente: se já estiver PROCESSING/DONE/ERROR, só devolve o estado atual.
+   * Idempotente: se não mudar nada, só retorna o estado atual.
    */
   async process(userId: string, id: string): Promise<Render | null> {
+    const now = new Date();
+
     // tenta transicionar PENDING -> PROCESSING de forma atômica
-    await this.prisma.render.updateMany({
+    const res = await this.prisma.render.updateMany({
       where: { id, userId, status: RenderStatus.PENDING },
-      data: { status: RenderStatus.PROCESSING },
+      data: {
+        status: RenderStatus.PROCESSING,
+        startedAt: now,
+
+        // limpando erro anterior, caso reprocessar vire algo no futuro
+        failedAt: null,
+        errorCode: null,
+        errorMessage: null,
+        errorMeta: Prisma.DbNull,
+      },
     });
 
-    // sempre retorna o estado atual
+    // se mudou, registra evento
+    if (res.count > 0) {
+      await this.prisma.renderEvent.create({
+        data: {
+          renderId: id,
+          type: RenderEventType.PROCESSING_STARTED,
+          fromStatus: RenderStatus.PENDING,
+          toStatus: RenderStatus.PROCESSING,
+          message: 'Processamento iniciado',
+          meta: { at: now.toISOString() },
+        },
+      });
+    }
+
     return this.prisma.render.findFirst({ where: { id, userId } });
   }
 
   /**
    * Worker fake: PROCESSING -> DONE
-   * (se quiser permitir PENDING -> DONE pra debug local, dá pra colocar em um flag)
    */
   async complete(userId: string, id: string): Promise<Render | null> {
+    const now = new Date();
     const fakeGeneratedUrl = `https://fake-cdn.renderia.local/renders/${id}.png`;
 
-    // tenta completar somente se estiver PROCESSING
-    await this.prisma.render.updateMany({
+    const res = await this.prisma.render.updateMany({
       where: { id, userId, status: RenderStatus.PROCESSING },
       data: {
         status: RenderStatus.DONE,
         generatedImageUrl: fakeGeneratedUrl,
+        completedAt: now,
+
+        // garantia: ao completar, remove erro
+        failedAt: null,
+        errorCode: null,
+        errorMessage: null,
+        errorMeta: Prisma.DbNull,
       },
     });
+
+    if (res.count > 0) {
+      await this.prisma.renderEvent.create({
+        data: {
+          renderId: id,
+          type: RenderEventType.COMPLETED,
+          fromStatus: RenderStatus.PROCESSING,
+          toStatus: RenderStatus.DONE,
+          message: 'Render finalizado com sucesso',
+          meta: { generatedImageUrl: fakeGeneratedUrl, at: now.toISOString() },
+        },
+      });
+    }
 
     return this.prisma.render.findFirst({ where: { id, userId } });
   }
 
   /**
-   * Worker fake: PROCESSING -> ERROR
+   * Worker fake: PROCESSING -> ERROR (com motivo)
    */
-  async fail(userId: string, id: string): Promise<Render | null> {
-    await this.prisma.render.updateMany({
+  async fail(
+    userId: string,
+    id: string,
+    reason: FailReason,
+  ): Promise<Render | null> {
+    const now = new Date();
+
+    const res = await this.prisma.render.updateMany({
       where: { id, userId, status: RenderStatus.PROCESSING },
       data: {
         status: RenderStatus.ERROR,
-        // errorMessage: reason ?? null (se tiver no schema)
+        failedAt: now,
+        errorCode: reason.code ?? 'UNKNOWN_ERROR',
+        errorMessage: reason.message,
+        errorMeta: Prisma.DbNull,
       },
     });
+
+    if (res.count > 0) {
+      await this.prisma.renderEvent.create({
+        data: {
+          renderId: id,
+          type: RenderEventType.FAILED,
+          fromStatus: RenderStatus.PROCESSING,
+          toStatus: RenderStatus.ERROR,
+          message: reason.message,
+          meta: {
+            code: reason.code ?? 'UNKNOWN_ERROR',
+            at: now.toISOString(),
+            details: reason.meta ?? null,
+          },
+        },
+      });
+    }
 
     return this.prisma.render.findFirst({ where: { id, userId } });
   }

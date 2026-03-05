@@ -22,4 +22,10 @@ export class CreateRenderDto {
   @Min(1)
   @Max(100)
   creditsToUse?: number;
+
+  // rastreabilidade/idempotência
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  clientRequestId?: string;
 }

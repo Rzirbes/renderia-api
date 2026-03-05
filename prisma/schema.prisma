@@ -26,6 +26,13 @@ enum CreditTxType {
   REFUND
 }
 
+enum RenderEventType {
+  CREATED
+  PROCESSING_STARTED
+  COMPLETED
+  FAILED
+}
+
 model User {
   id        String   @id @default(uuid())
   name      String?
@@ -55,10 +62,36 @@ model Render {
   status            RenderStatus @default(PENDING)
   creditsUsed       Int          @default(0)
 
+  traceId           String?       @default(uuid()) // correlação interna p/ logs e filas
+  clientRequestId   String?
+  providerJobId     String?
+  providerRequestId String?
+  startedAt         DateTime?
+  completedAt       DateTime?
+  failedAt          DateTime?
+  errorCode         String?
+  errorMessage      String?
+  errorMeta         Json?
   createdAt         DateTime     @default(now())
   updatedAt         DateTime     @updatedAt
-
+  events            RenderEvent[]
   @@index([userId, createdAt])
+  @@index([traceId])
+  @@index([clientRequestId])
+  @@index([status, createdAt])
+}
+
+model RenderEvent {
+  id          String          @id @default(uuid())
+  renderId    String
+  render      Render          @relation(fields: [renderId], references: [id], onDelete: Cascade)
+  type        RenderEventType
+  fromStatus  RenderStatus?
+  toStatus    RenderStatus?
+  message     String?
+  meta        Json?
+  createdAt   DateTime        @default(now())
+  @@index([renderId, createdAt])
 }
 
 model CreditTransaction {
