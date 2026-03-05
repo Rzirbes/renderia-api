@@ -27,6 +27,7 @@ import {
   SwaggerFailRender,
 } from '../../common/decorators/renders/renders.swagger';
 import { CurrentUser } from '../../common/decorators/auth/current-user.decorator';
+import { FailRenderDto } from './dto/fail-render.dto';
 
 type JwtPayload = { userId: string; email: string };
 
@@ -55,7 +56,6 @@ export class RendersController {
     return toRenderResponse(render);
   }
 
-  // ➕ novo: finaliza (simula worker)
   @Post(':id/complete')
   @HttpCode(200)
   @SwaggerCompleteRender()
@@ -68,15 +68,19 @@ export class RendersController {
     return toRenderResponse(render);
   }
 
-  // ➕ novo: falha (simula worker)
   @Post(':id/fail')
   @HttpCode(200)
   @SwaggerFailRender()
   async fail(
     @CurrentUser() user: JwtPayload,
     @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() body: FailRenderDto,
   ) {
-    const render = await this.rendersService.fail(user.userId, id);
+    const render = await this.rendersService.fail(user.userId, id, {
+      code: body.code,
+      message: body.message,
+    });
+
     if (!render) throw new NotFoundException();
     return toRenderResponse(render);
   }
