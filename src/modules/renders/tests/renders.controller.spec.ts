@@ -1,6 +1,5 @@
 import { NotFoundException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
-import { Request } from 'express';
 
 import { RendersController } from '../renders.controller';
 import { RendersService } from '../renders.service';
@@ -9,7 +8,6 @@ import { ListRendersDto } from '../dto/list-renders.dto';
 import { RenderResponse, toRenderResponse } from '../dto/render-response.dto';
 
 type JwtPayload = { userId: string; email: string };
-type ReqWithUser = Request & { user: JwtPayload };
 
 jest.mock('../dto/render-response.dto', () => ({
   toRenderResponse: jest.fn(),
@@ -21,17 +19,19 @@ const toRenderResponseMock = toRenderResponse as unknown as jest.Mock<
 >;
 
 type RendersServiceMock = jest.Mocked<
-  Pick<RendersService, 'create' | 'list' | 'findById' | 'remove' | 'process'>
+  Pick<
+    RendersService,
+    'create' | 'list' | 'findById' | 'remove' | 'process' | 'complete' | 'fail'
+  >
 >;
-
 describe('RendersController (unit)', () => {
   let controller: RendersController;
   let rendersServiceMock: RendersServiceMock;
 
-  const makeReq = (userId = 'u1'): ReqWithUser =>
-    ({
-      user: { userId, email: 'romulo@test.com' },
-    }) as ReqWithUser;
+  const makeUser = (userId = 'u1'): JwtPayload => ({
+    userId,
+    email: 'romulo@test.com',
+  });
 
   beforeEach(async () => {
     rendersServiceMock = {
@@ -40,6 +40,8 @@ describe('RendersController (unit)', () => {
       findById: jest.fn(),
       remove: jest.fn(),
       process: jest.fn(),
+      complete: jest.fn(),
+      fail: jest.fn(),
     };
 
     const moduleRef = await Test.createTestingModule({
@@ -72,7 +74,7 @@ describe('RendersController (unit)', () => {
       );
       toRenderResponseMock.mockReturnValueOnce(mapped);
 
-      const result = await controller.create(makeReq('u1'), dto);
+      const result = await controller.create(makeUser('u1'), dto);
 
       expect(rendersServiceMock.create).toHaveBeenCalledWith('u1', dto);
       expect(toRenderResponseMock).toHaveBeenCalledWith(renderFromService);
@@ -97,7 +99,7 @@ describe('RendersController (unit)', () => {
         .mockReturnValueOnce({ id: 'r1' } as RenderResponse)
         .mockReturnValueOnce({ id: 'r2' } as RenderResponse);
 
-      const result = await controller.list(makeReq('u1'), query);
+      const result = await controller.list(makeUser('u1'), query);
 
       expect(rendersServiceMock.list).toHaveBeenCalledWith('u1', query);
       expect(toRenderResponseMock).toHaveBeenCalledTimes(2);
@@ -118,7 +120,7 @@ describe('RendersController (unit)', () => {
         total: 0,
       } as never);
 
-      const result = await controller.list(makeReq('u1'), {});
+      const result = await controller.list(makeUser('u1'), {});
 
       expect(result).toEqual({
         page: 1,
@@ -140,7 +142,7 @@ describe('RendersController (unit)', () => {
       );
       toRenderResponseMock.mockReturnValueOnce(mapped);
 
-      const result = await controller.findOne(makeReq('u1'), 'r1');
+      const result = await controller.findOne(makeUser('u1'), 'r1');
 
       expect(rendersServiceMock.findById).toHaveBeenCalledWith('u1', 'r1');
       expect(toRenderResponseMock).toHaveBeenCalledWith(renderFromService);
@@ -151,7 +153,7 @@ describe('RendersController (unit)', () => {
       rendersServiceMock.findById.mockResolvedValueOnce(null);
 
       await expect(
-        controller.findOne(makeReq('u1'), 'missing'),
+        controller.findOne(makeUser('u1'), 'missing'),
       ).rejects.toBeInstanceOf(NotFoundException);
 
       expect(rendersServiceMock.findById).toHaveBeenCalledWith('u1', 'missing');
@@ -163,7 +165,7 @@ describe('RendersController (unit)', () => {
     it('returns { ok: true } when removed', async () => {
       rendersServiceMock.remove.mockResolvedValueOnce(true);
 
-      const result = await controller.remove(makeReq('u1'), 'r1');
+      const result = await controller.remove(makeUser('u1'), 'r1');
 
       expect(rendersServiceMock.remove).toHaveBeenCalledWith('u1', 'r1');
       expect(result).toEqual({ ok: true });
@@ -173,7 +175,7 @@ describe('RendersController (unit)', () => {
       rendersServiceMock.remove.mockResolvedValueOnce(false);
 
       await expect(
-        controller.remove(makeReq('u1'), 'missing'),
+        controller.remove(makeUser('u1'), 'missing'),
       ).rejects.toBeInstanceOf(NotFoundException);
 
       expect(rendersServiceMock.remove).toHaveBeenCalledWith('u1', 'missing');
@@ -190,7 +192,7 @@ describe('RendersController (unit)', () => {
       );
       toRenderResponseMock.mockReturnValueOnce(mapped);
 
-      const result = await controller.process(makeReq('u1'), 'r1');
+      const result = await controller.process(makeUser('u1'), 'r1');
 
       expect(rendersServiceMock.process).toHaveBeenCalledWith('u1', 'r1');
       expect(toRenderResponseMock).toHaveBeenCalledWith(renderFromService);
@@ -201,7 +203,7 @@ describe('RendersController (unit)', () => {
       rendersServiceMock.process.mockResolvedValueOnce(null);
 
       await expect(
-        controller.process(makeReq('u1'), 'missing'),
+        controller.process(makeUser('u1'), 'missing'),
       ).rejects.toBeInstanceOf(NotFoundException);
 
       expect(rendersServiceMock.process).toHaveBeenCalledWith('u1', 'missing');

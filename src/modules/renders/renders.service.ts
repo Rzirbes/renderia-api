@@ -45,83 +45,60 @@ export class RendersService {
   }
 
   async findById(userId: string, id: string): Promise<Render | null> {
-    return this.prisma.render.findFirst({
-      where: { id, userId },
-    });
+    return this.prisma.render.findFirst({ where: { id, userId } });
   }
 
   async remove(userId: string, id: string): Promise<boolean> {
-    const res = await this.prisma.render.deleteMany({
-      where: { id, userId },
-    });
-
+    const res = await this.prisma.render.deleteMany({ where: { id, userId } });
     return res.count > 0;
   }
 
   /**
-   * Marca como PROCESSING (idempotente).
-   * NÃO finaliza aqui. Isso simula o "enqueue" / início de processamento.
+   * Enfileira/começa: PENDING -> PROCESSING
+   * Idempotente: se já estiver PROCESSING/DONE/ERROR, só devolve o estado atual.
    */
   async process(userId: string, id: string): Promise<Render | null> {
-    return this.prisma.$transaction(async (tx) => {
-      const render = await tx.render.findFirst({ where: { id, userId } });
-      if (!render) return null;
-
-      if (render.status === RenderStatus.DONE) return render;
-      if (render.status === RenderStatus.PROCESSING) return render;
-
-      return tx.render.update({
-        where: { id: render.id },
-        data: { status: RenderStatus.PROCESSING },
-      });
+    // tenta transicionar PENDING -> PROCESSING de forma atômica
+    await this.prisma.render.updateMany({
+      where: { id, userId, status: RenderStatus.PENDING },
+      data: { status: RenderStatus.PROCESSING },
     });
+
+    // sempre retorna o estado atual
+    return this.prisma.render.findFirst({ where: { id, userId } });
   }
 
   /**
-   * "Worker" fake por enquanto:
-   * Finaliza o render se estiver em PROCESSING (ou PENDING, se quiser permitir).
+   * Worker fake: PROCESSING -> DONE
+   * (se quiser permitir PENDING -> DONE pra debug local, dá pra colocar em um flag)
    */
   async complete(userId: string, id: string): Promise<Render | null> {
-    return this.prisma.$transaction(async (tx) => {
-      const render = await tx.render.findFirst({ where: { id, userId } });
-      if (!render) return null;
+    const fakeGeneratedUrl = `https://fake-cdn.renderia.local/renders/${id}.png`;
 
-      if (render.status === RenderStatus.DONE) return render;
-
-      if (
-        render.status !== RenderStatus.PROCESSING &&
-        render.status !== RenderStatus.PENDING
-      ) {
-        return render;
-      }
-
-      const fakeGeneratedUrl = `https://fake-cdn.renderia.local/renders/${render.id}.png`;
-
-      return tx.render.update({
-        where: { id: render.id },
-        data: {
-          status: RenderStatus.DONE,
-          generatedImageUrl: fakeGeneratedUrl,
-        },
-      });
+    // tenta completar somente se estiver PROCESSING
+    await this.prisma.render.updateMany({
+      where: { id, userId, status: RenderStatus.PROCESSING },
+      data: {
+        status: RenderStatus.DONE,
+        generatedImageUrl: fakeGeneratedUrl,
+      },
     });
+
+    return this.prisma.render.findFirst({ where: { id, userId } });
   }
 
+  /**
+   * Worker fake: PROCESSING -> ERROR
+   */
   async fail(userId: string, id: string): Promise<Render | null> {
-    return this.prisma.$transaction(async (tx) => {
-      const render = await tx.render.findFirst({ where: { id, userId } });
-      if (!render) return null;
-
-      if (render.status === RenderStatus.DONE) return render;
-
-      return tx.render.update({
-        where: { id: render.id },
-        data: {
-          status: RenderStatus.ERROR,
-          // se você tiver campo errorMessage no schema, salva aqui:
-          // errorMessage: reason ?? null,
-        },
-      });
+    await this.prisma.render.updateMany({
+      where: { id, userId, status: RenderStatus.PROCESSING },
+      data: {
+        status: RenderStatus.ERROR,
+        // errorMessage: reason ?? null (se tiver no schema)
+      },
     });
+
+    return this.prisma.render.findFirst({ where: { id, userId } });
   }
 }

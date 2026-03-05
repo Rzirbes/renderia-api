@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   UnauthorizedException,
@@ -6,12 +7,15 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../database/prisma/prisma.service';
 import * as argon2 from 'argon2';
+import { randomBytes, createHash } from 'crypto';
+import { MailService } from '../mail/mail.service';
 
 @Injectable()
 export class AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
+    private readonly mail: MailService,
   ) {}
 
   async register(input: { name?: string; email: string; password: string }) {
@@ -70,5 +74,83 @@ export class AuthService {
       },
       accessToken,
     };
+  }
+  async forgotPassword(input: { email: string }) {
+    console.log('[FORGOT] input.email =', input.email);
+    console.log('[FORGOT] NODE_ENV =', process.env.NODE_ENV);
+
+    const user = await this.prisma.user.findUnique({
+      where: { email: input.email },
+      select: { id: true, email: true },
+    });
+
+    console.log('[FORGOT] user.email =', user?.email ?? null);
+
+    // anti-enumeração: sempre responde ok
+    if (!user) {
+      console.log('[FORGOT] user not found -> returning ok without sending');
+      return { ok: true };
+    }
+
+    const token = randomBytes(32).toString('base64url');
+    const tokenHash = createHash('sha256').update(token).digest('hex');
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 min
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        resetPasswordTokenHash: tokenHash,
+        resetPasswordExpiresAt: expiresAt,
+      },
+    });
+
+    const frontUrl = process.env.FRONT_URL ?? 'http://localhost:3000';
+    const resetLink = `${frontUrl}/reset-password?token=${encodeURIComponent(token)}`;
+
+    console.log(
+      '[FORGOT] RESEND_API_KEY exists?',
+      !!process.env.RESEND_API_KEY,
+    );
+    console.log('[FORGOT] EMAIL_FROM_EMAIL =', process.env.EMAIL_FROM_EMAIL);
+    console.log('[FORGOT] sending mail to =', user.email);
+
+    await this.mail.sendResetPasswordEmail({
+      to: user.email,
+      resetLink,
+    });
+
+    // Em dev, retorna token pra facilitar teste
+    if (process.env.NODE_ENV !== 'production') {
+      return { ok: true, token, resetLink };
+    }
+
+    return { ok: true };
+  }
+
+  async resetPassword(input: { token: string; newPassword: string }) {
+    const tokenHash = createHash('sha256').update(input.token).digest('hex');
+
+    const user = await this.prisma.user.findFirst({
+      where: {
+        resetPasswordTokenHash: tokenHash,
+        resetPasswordExpiresAt: { gt: new Date() },
+      },
+      select: { id: true },
+    });
+
+    if (!user) throw new BadRequestException('Token inválido ou expirado');
+
+    const newHash = await argon2.hash(input.newPassword);
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        password: newHash,
+        resetPasswordTokenHash: null,
+        resetPasswordExpiresAt: null,
+      },
+    });
+
+    return { ok: true };
   }
 }
