@@ -1,11 +1,14 @@
 import {
   Body,
   Controller,
+  DefaultValuePipe,
   Delete,
   Get,
+  Headers,
   HttpCode,
   NotFoundException,
   Param,
+  ParseIntPipe,
   ParseUUIDPipe,
   Post,
   Query,
@@ -42,6 +45,26 @@ export class RendersController {
   async create(@CurrentUser() user: JwtPayload, @Body() dto: CreateRenderDto) {
     const render = await this.rendersService.create(user.userId, dto);
     return toRenderResponse(render);
+  }
+
+  @Post('requeue-pendings')
+  @HttpCode(200)
+  async requeuePendings(
+    @Headers('x-admin-key') adminKey: string | undefined,
+    @Query('minutes', new DefaultValuePipe(2), ParseIntPipe) minutes: number,
+    @Query('limit', new DefaultValuePipe(50), ParseIntPipe) limit: number,
+  ) {
+    if (!process.env.ADMIN_REQUEUE_KEY) {
+      throw new NotFoundException();
+    }
+    if (!adminKey || adminKey !== process.env.ADMIN_REQUEUE_KEY) {
+      throw new NotFoundException();
+    }
+
+    const safeMinutes = Math.min(Math.max(minutes, 1), 60);
+    const safeLimit = Math.min(Math.max(limit, 1), 500);
+
+    return this.rendersService.requeuePendings(safeMinutes, safeLimit);
   }
 
   @Post(':id/process')

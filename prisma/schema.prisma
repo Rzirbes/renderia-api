@@ -31,6 +31,8 @@ enum RenderEventType {
   PROCESSING_STARTED
   COMPLETED
   FAILED
+  QUEUE_ENQUEUE_FAILED
+  REQUEUED
 }
 
 model User {
