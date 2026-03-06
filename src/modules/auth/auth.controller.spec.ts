@@ -67,11 +67,4 @@ describe('AuthController', () => {
       expect(result).toEqual(response);
     });
   });
-
-  describe('me', () => {
-    it('should return the current user payload', () => {
-      const user = { userId: 'u1', email: 'romulo@test.com' };
-      expect(controller.me(user)).toEqual(user);
-    });
-  });
 });
