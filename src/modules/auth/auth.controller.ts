@@ -24,7 +24,7 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   @Get('me')
   me(@CurrentUser() user: { userId: string; email: string }) {
-    return user;
+    return this.auth.me(user.userId);
   }
 
   @Post('forgot-password')

@@ -75,26 +75,39 @@ export class AuthService {
       accessToken,
     };
   }
-  async forgotPassword(input: { email: string }) {
-    console.log('[FORGOT] input.email =', input.email);
-    console.log('[FORGOT] NODE_ENV =', process.env.NODE_ENV);
 
+  async me(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        credits: true,
+        createdAt: true,
+      },
+    });
+
+    if (!user) {
+      throw new UnauthorizedException('Usuário não encontrado');
+    }
+
+    return { user };
+  }
+
+  async forgotPassword(input: { email: string }) {
     const user = await this.prisma.user.findUnique({
       where: { email: input.email },
       select: { id: true, email: true },
     });
 
-    console.log('[FORGOT] user.email =', user?.email ?? null);
-
-    // anti-enumeração: sempre responde ok
     if (!user) {
-      console.log('[FORGOT] user not found -> returning ok without sending');
       return { ok: true };
     }
 
     const token = randomBytes(32).toString('base64url');
     const tokenHash = createHash('sha256').update(token).digest('hex');
-    const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 min
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
 
     await this.prisma.user.update({
       where: { id: user.id },
@@ -107,19 +120,11 @@ export class AuthService {
     const frontUrl = process.env.FRONT_URL ?? 'http://localhost:3000';
     const resetLink = `${frontUrl}/reset-password?token=${encodeURIComponent(token)}`;
 
-    console.log(
-      '[FORGOT] RESEND_API_KEY exists?',
-      !!process.env.RESEND_API_KEY,
-    );
-    console.log('[FORGOT] EMAIL_FROM_EMAIL =', process.env.EMAIL_FROM_EMAIL);
-    console.log('[FORGOT] sending mail to =', user.email);
-
     await this.mail.sendResetPasswordEmail({
       to: user.email,
       resetLink,
     });
 
-    // Em dev, retorna token pra facilitar teste
     if (process.env.NODE_ENV !== 'production') {
       return { ok: true, token, resetLink };
     }
