@@ -7,6 +7,8 @@ import { RendersModule } from './modules/renders/renders.module';
 import { ConfigModule } from '@nestjs/config';
 import { QueueModule } from './queue/queue.module';
 import { RendersWorkerRunner } from './queue/workers/renders.worker.runner';
+import { ServeStaticModule } from '@nestjs/serve-static';
+import { join } from 'path';
 
 @Module({
   imports: [
@@ -14,7 +16,10 @@ import { RendersWorkerRunner } from './queue/workers/renders.worker.runner';
       isGlobal: true,
       envFilePath: ['.env'],
     }),
-
+    ServeStaticModule.forRoot({
+      rootPath: join(process.cwd(), 'uploads'),
+      serveRoot: '/uploads',
+    }),
     PrismaModule,
     AuthModule,
     UsersModule,

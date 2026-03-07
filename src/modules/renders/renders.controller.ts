@@ -19,6 +19,7 @@ import { CreateRenderDto } from './dto/create-render.dto';
 import { ListRendersDto } from './dto/list-renders.dto';
 import { toRenderResponse } from './dto/render-response.dto';
 import { RendersService } from './renders.service';
+import { StorageService } from './storage.service';
 import {
   SwaggerCreateRender,
   SwaggerDeleteRender,
@@ -31,6 +32,7 @@ import {
 } from '../../common/decorators/renders/renders.swagger';
 import { CurrentUser } from '../../common/decorators/auth/current-user.decorator';
 import { FailRenderDto } from './dto/fail-render.dto';
+import { RenderProcessorService } from './render-processor.service';
 
 type JwtPayload = { userId: string; email: string };
 
@@ -38,12 +40,30 @@ type JwtPayload = { userId: string; email: string };
 @Controller('renders')
 @UseGuards(JwtAuthGuard)
 export class RendersController {
-  constructor(private readonly rendersService: RendersService) {}
+  constructor(
+    private readonly rendersService: RendersService,
+    private readonly storageService: StorageService,
+    private readonly renderProcessorService: RenderProcessorService,
+  ) {}
 
   @Post()
   @SwaggerCreateRender()
   async create(@CurrentUser() user: JwtPayload, @Body() dto: CreateRenderDto) {
-    const render = await this.rendersService.create(user.userId, dto);
+    const downloaded = await this.storageService.downloadFromUrl(
+      dto.originalImageUrl,
+    );
+
+    const originalImage = await this.storageService.uploadOriginalImage({
+      buffer: downloaded.buffer,
+      mimeType: downloaded.mimeType,
+    });
+
+    const render = await this.rendersService.create(user.userId, dto, {
+      url: originalImage.url,
+      path: originalImage.path,
+      mimeType: originalImage.mimeType,
+    });
+
     return toRenderResponse(render);
   }
 
@@ -57,6 +77,7 @@ export class RendersController {
     if (!process.env.ADMIN_REQUEUE_KEY) {
       throw new NotFoundException();
     }
+
     if (!adminKey || adminKey !== process.env.ADMIN_REQUEUE_KEY) {
       throw new NotFoundException();
     }
@@ -74,8 +95,11 @@ export class RendersController {
     @CurrentUser() user: JwtPayload,
     @Param('id', new ParseUUIDPipe()) id: string,
   ) {
-    const render = await this.rendersService.process(user.userId, id);
+    await this.renderProcessorService.processRender(user.userId, id);
+
+    const render = await this.rendersService.findById(user.userId, id);
     if (!render) throw new NotFoundException();
+
     return toRenderResponse(render);
   }
 

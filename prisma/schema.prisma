@@ -53,34 +53,44 @@ model User {
 }
 
 model Render {
-  id                String       @id @default(uuid())
-  userId            String
-  user              User         @relation(fields: [userId], references: [id])
+  id                  String       @id @default(uuid())
+  userId              String
+  user                User         @relation(fields: [userId], references: [id])
 
-  originalImageUrl  String
-  generatedImageUrl String?
-  prompt            String?
+  originalImageUrl    String
+  originalImagePath   String?
+  generatedImageUrl   String?
+  generatedImagePath  String?
+  prompt              String?
 
-  status            RenderStatus @default(PENDING)
-  creditsUsed       Int          @default(0)
+  presetId            String?      // ex: daylight_9am
+  providerModel       String?      // ex: gemini-3-pro-image-preview
+  sourceImageMimeType String?      // ex: image/png
+  outputImageMimeType String?      // ex: image/png
 
-  traceId           String?       @default(uuid()) // correlação interna p/ logs e filas
-  clientRequestId   String?
-  providerJobId     String?
-  providerRequestId String?
-  startedAt         DateTime?
-  completedAt       DateTime?
-  failedAt          DateTime?
-  errorCode         String?
-  errorMessage      String?
-  errorMeta         Json?
-  createdAt         DateTime     @default(now())
-  updatedAt         DateTime     @updatedAt
-  events            RenderEvent[]
+  status              RenderStatus @default(PENDING)
+  creditsUsed         Int          @default(0)
+
+  traceId             String?      @default(uuid())
+  clientRequestId     String?
+  providerJobId       String?
+  providerRequestId   String?
+  startedAt           DateTime?
+  completedAt         DateTime?
+  failedAt            DateTime?
+  errorCode           String?
+  errorMessage        String?
+  errorMeta           Json?
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+
+  events              RenderEvent[]
+
   @@index([userId, createdAt])
   @@index([traceId])
   @@index([clientRequestId])
   @@index([status, createdAt])
+  @@index([presetId])
 }
 
 model RenderEvent {
