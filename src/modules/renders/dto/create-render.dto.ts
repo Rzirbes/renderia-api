@@ -1,4 +1,5 @@
 import {
+  IsIn,
   IsInt,
   IsOptional,
   IsString,
@@ -7,6 +8,9 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
+import type { RenderPresetId } from '../render-presets';
+
+const RENDER_PRESET_IDS = ['daylight_9am', 'blue_hour'] as const;
 
 export class CreateRenderDto {
   @IsUrl()
@@ -18,12 +22,16 @@ export class CreateRenderDto {
   prompt?: string;
 
   @IsOptional()
+  @IsString()
+  @IsIn(RENDER_PRESET_IDS)
+  presetId?: RenderPresetId;
+
+  @IsOptional()
   @IsInt()
   @Min(1)
   @Max(100)
   creditsToUse?: number;
 
-  // rastreabilidade/idempotência
   @IsOptional()
   @IsString()
   @MaxLength(64)

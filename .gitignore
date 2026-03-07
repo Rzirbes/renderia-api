@@ -22,6 +22,10 @@ lib-cov
 coverage
 *.lcov
 
+# Uploads locais (renders gerados e imagens enviadas)
+uploads/
+uploads/renders/
+
 # nyc test coverage
 .nyc_output
 

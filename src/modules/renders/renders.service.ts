@@ -6,6 +6,7 @@ import { CreateRenderDto } from './dto/create-render.dto';
 import { ListRendersDto } from './dto/list-renders.dto';
 import { PaginatedResult } from '../../common/pagination/paginated-result';
 import { rendersQueue } from './renders.queue';
+import { RENDER_PRESETS, RenderPresetId } from './render-presets';
 
 type FailReason = {
   code?: string;
@@ -85,29 +86,47 @@ export class RendersService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  async create(userId: string, dto: CreateRenderDto): Promise<Render> {
+  async create(
+    userId: string,
+    dto: CreateRenderDto,
+    originalImage: {
+      url: string;
+      path: string;
+      mimeType: string;
+    },
+  ): Promise<Render> {
     if (dto.clientRequestId) {
       const existing = await this.prisma.render.findFirst({
         where: { userId, clientRequestId: dto.clientRequestId },
       });
+
       if (existing) return existing;
     }
+
+    const presetId: RenderPresetId = dto.presetId ?? 'daylight_9am';
+    const preset = RENDER_PRESETS[presetId];
 
     const render = await this.prisma.render.create({
       data: {
         userId,
-        originalImageUrl: dto.originalImageUrl,
+        originalImageUrl: originalImage.url,
+        originalImagePath: originalImage.path,
+        sourceImageMimeType: originalImage.mimeType,
         prompt: dto.prompt ?? null,
+        presetId,
         creditsUsed: dto.creditsToUse ?? 0,
         clientRequestId: dto.clientRequestId ?? null,
         status: RenderStatus.PENDING,
         generatedImageUrl: null,
+        generatedImagePath: null,
+        providerModel: null,
+        outputImageMimeType: null,
         events: {
           create: {
             type: RenderEventType.CREATED,
             fromStatus: null,
             toStatus: RenderStatus.PENDING,
-            message: 'Render criado',
+            message: `Render criado com preset ${preset.label}`,
           },
         },
       },
