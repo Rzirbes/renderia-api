@@ -30,13 +30,13 @@ import {
   SwaggerListRenders,
   SwaggerProcessRender,
   SwaggerRendersController,
-  SwaggerCompleteRender,
   SwaggerFailRender,
 } from '../../common/decorators/renders/renders.swagger';
 import { CurrentUser } from '../../common/decorators/auth/current-user.decorator';
 import { FailRenderDto } from './dto/fail-render.dto';
 import { RenderProcessorService } from './render-processor.service';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { EditRenderDto } from './dto/edit-render.dto';
 
 type JwtPayload = { userId: string; email: string };
 
@@ -113,18 +113,6 @@ export class RendersController {
     return toRenderResponse(render);
   }
 
-  @Post(':id/complete')
-  @HttpCode(200)
-  @SwaggerCompleteRender()
-  async complete(
-    @CurrentUser() user: JwtPayload,
-    @Param('id', new ParseUUIDPipe()) id: string,
-  ) {
-    const render = await this.rendersService.complete(user.userId, id);
-    if (!render) throw new NotFoundException();
-    return toRenderResponse(render);
-  }
-
   @Post(':id/fail')
   @HttpCode(200)
   @SwaggerFailRender()
@@ -139,6 +127,23 @@ export class RendersController {
     });
 
     if (!render) throw new NotFoundException();
+    return toRenderResponse(render);
+  }
+
+  @Post(':id/edit')
+  async edit(
+    @CurrentUser() user: JwtPayload,
+    @Param('id', new ParseUUIDPipe()) renderId: string,
+    @Body() dto: EditRenderDto,
+  ) {
+    console.log('EDIT ROUTE HIT', renderId, dto);
+
+    const render = await this.rendersService.editRender(
+      user.userId,
+      renderId,
+      dto,
+    );
+
     return toRenderResponse(render);
   }
 

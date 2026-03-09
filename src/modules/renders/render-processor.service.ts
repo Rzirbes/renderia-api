@@ -1,5 +1,4 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { PrismaService } from 'src/database/prisma/prisma.service';
 import { RendersService } from './renders.service';
 import { GeminiRenderService } from './gemini-render.service';
 import { StorageService } from './storage.service';
@@ -8,7 +7,6 @@ import { RENDER_PRESETS, RenderPresetId } from './render-presets';
 @Injectable()
 export class RenderProcessorService {
   constructor(
-    private readonly prisma: PrismaService,
     private readonly rendersService: RendersService,
     private readonly geminiRenderService: GeminiRenderService,
     private readonly storageService: StorageService,
@@ -60,18 +58,13 @@ export class RenderProcessorService {
         mimeType: result.mimeType,
       });
 
-      await this.prisma.render.update({
-        where: { id: renderId },
-        data: {
-          generatedImageUrl: uploaded.url,
-          generatedImagePath: uploaded.path,
-          outputImageMimeType: uploaded.mimeType,
-          sourceImageMimeType: originalFile.mimeType,
-          providerModel: preset.model ?? null,
-        },
+      await this.rendersService.markAsDone(userId, renderId, {
+        generatedImageUrl: uploaded.url,
+        generatedImagePath: uploaded.path,
+        outputImageMimeType: uploaded.mimeType,
+        sourceImageMimeType: originalFile.mimeType,
+        providerModel: preset.model ?? null,
       });
-
-      await this.rendersService.complete(userId, renderId);
     } catch (error) {
       await this.rendersService.fail(userId, renderId, {
         code: 'PROCESSING_ERROR',

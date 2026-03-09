@@ -3,11 +3,13 @@ import { Logger } from '@nestjs/common';
 import { Worker } from 'bullmq';
 
 import { bullConnection } from '../connection';
-import { RendersService } from '../../modules/renders/renders.service';
+import { RenderProcessorService } from '../../modules/renders/render-processor.service';
 
 const logger = new Logger('RendersWorker');
 
-export function startRendersWorker(rendersService: RendersService) {
+export function startRendersWorker(
+  renderProcessorService: RenderProcessorService,
+) {
   return new Worker(
     'renders',
     async (job) => {
@@ -18,10 +20,7 @@ export function startRendersWorker(rendersService: RendersService) {
 
       logger.log(`Processing render ${renderId}`);
 
-      await rendersService.process(userId, renderId);
-
-      // TODO: provider real aqui no futuro
-      await rendersService.complete(userId, renderId);
+      await renderProcessorService.processRender(userId, renderId);
     },
     { connection: bullConnection },
   );

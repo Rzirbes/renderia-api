@@ -1,4 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { Prisma, Render, RenderEventType, RenderStatus } from '@prisma/client';
 
 import { PrismaService } from '../../database/prisma/prisma.service';
@@ -7,6 +12,7 @@ import { ListRendersDto } from './dto/list-renders.dto';
 import { PaginatedResult } from '../../common/pagination/paginated-result';
 import { rendersQueue } from './renders.queue';
 import { RENDER_PRESETS, RenderPresetId } from './render-presets';
+import { EditRenderDto } from './dto/edit-render.dto';
 
 type FailReason = {
   code?: string;
@@ -244,18 +250,26 @@ export class RendersService {
   /**
    * Worker fake: PROCESSING -> DONE
    */
-  async complete(userId: string, id: string): Promise<Render | null> {
+  /*  async complete(
+    userId: string,
+    id: string,
+    generatedImage: {
+      url: string;
+      path: string;
+      mimeType: string;
+    },
+  ): Promise<Render | null> {
     const now = new Date();
-    const fakeGeneratedUrl = `https://fake-cdn.renderia.local/renders/${id}.png`;
 
     return this.prisma.$transaction(async (tx) => {
       const res = await tx.render.updateMany({
         where: { id, userId, status: RenderStatus.PROCESSING },
         data: {
           status: RenderStatus.DONE,
-          generatedImageUrl: fakeGeneratedUrl,
+          generatedImageUrl: generatedImage.url,
+          generatedImagePath: generatedImage.path,
+          outputImageMimeType: generatedImage.mimeType,
           completedAt: now,
-
           failedAt: null,
           errorCode: null,
           errorMessage: null,
@@ -272,7 +286,9 @@ export class RendersService {
             toStatus: RenderStatus.DONE,
             message: 'Render finalizado com sucesso',
             meta: {
-              generatedImageUrl: fakeGeneratedUrl,
+              generatedImageUrl: generatedImage.url,
+              generatedImagePath: generatedImage.path,
+              outputImageMimeType: generatedImage.mimeType,
               at: now.toISOString(),
             },
           },
@@ -281,6 +297,117 @@ export class RendersService {
 
       return tx.render.findFirst({ where: { id, userId } });
     });
+  }
+*/
+  async markAsDone(
+    userId: string,
+    id: string,
+    payload: {
+      generatedImageUrl: string;
+      generatedImagePath: string;
+      outputImageMimeType: string;
+      sourceImageMimeType?: string | null;
+      providerModel?: string | null;
+    },
+  ): Promise<Render | null> {
+    const now = new Date();
+
+    return this.prisma.$transaction(async (tx) => {
+      const res = await tx.render.updateMany({
+        where: { id, userId, status: RenderStatus.PROCESSING },
+        data: {
+          status: RenderStatus.DONE,
+          generatedImageUrl: payload.generatedImageUrl,
+          generatedImagePath: payload.generatedImagePath,
+          outputImageMimeType: payload.outputImageMimeType,
+          sourceImageMimeType: payload.sourceImageMimeType ?? undefined,
+          providerModel: payload.providerModel ?? null,
+          completedAt: now,
+          failedAt: null,
+          errorCode: null,
+          errorMessage: null,
+          errorMeta: Prisma.DbNull,
+        },
+      });
+
+      if (res.count > 0) {
+        await tx.renderEvent.create({
+          data: {
+            renderId: id,
+            type: RenderEventType.COMPLETED,
+            fromStatus: RenderStatus.PROCESSING,
+            toStatus: RenderStatus.DONE,
+            message: 'Render finalizado com sucesso',
+            meta: {
+              generatedImageUrl: payload.generatedImageUrl,
+              generatedImagePath: payload.generatedImagePath,
+              outputImageMimeType: payload.outputImageMimeType,
+              sourceImageMimeType: payload.sourceImageMimeType ?? null,
+              providerModel: payload.providerModel ?? null,
+              at: now.toISOString(),
+            },
+          },
+        });
+      }
+
+      return tx.render.findFirst({ where: { id, userId } });
+    });
+  }
+  async editRender(userId: string, renderId: string, dto: EditRenderDto) {
+    const render = await this.prisma.render.findFirst({
+      where: {
+        id: renderId,
+        userId,
+      },
+    });
+
+    if (!render) {
+      throw new NotFoundException('Render não encontrado.');
+    }
+
+    if (render.status !== 'DONE') {
+      throw new BadRequestException(
+        'Apenas renders concluídos podem ser editados.',
+      );
+    }
+
+    if (
+      !render.generatedImageUrl ||
+      !render.generatedImagePath ||
+      !render.outputImageMimeType
+    ) {
+      throw new BadRequestException(
+        'Este render não possui imagem gerada válida para servir como base da edição.',
+      );
+    }
+
+    const newRender = await this.prisma.render.create({
+      data: {
+        userId,
+        parentRenderId: render.id,
+        status: 'PENDING',
+        prompt: dto.prompt ?? render.prompt,
+        presetId: dto.presetId ?? render.presetId,
+        originalImageUrl: render.generatedImageUrl,
+        originalImagePath: render.generatedImagePath,
+        sourceImageMimeType: render.outputImageMimeType,
+      },
+    });
+
+    await this.prisma.renderEvent.create({
+      data: {
+        renderId: newRender.id,
+        type: 'CREATED',
+        toStatus: 'PENDING',
+        message: 'Render criado a partir da edição de um render anterior.',
+        meta: {
+          parentRenderId: render.id,
+          editedFromRenderId: render.id,
+        },
+      },
+    });
+
+    return newRender;
   }
 
   async requeuePendings(cutoffMinutes = 2, limit = 50): Promise<RequeueResult> {
