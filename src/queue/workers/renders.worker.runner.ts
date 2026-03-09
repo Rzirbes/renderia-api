@@ -2,20 +2,22 @@
 import {
   Injectable,
   Logger,
-  OnModuleInit,
   OnModuleDestroy,
+  OnModuleInit,
 } from '@nestjs/common';
 import { Worker } from 'bullmq';
 
 import { bullConnection } from '../connection';
-import { RendersService } from '../../modules/renders/renders.service';
+import { RenderProcessorService } from '../../modules/renders/render-processor.service';
 
 @Injectable()
 export class RendersWorkerRunner implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(RendersWorkerRunner.name);
   private worker: Worker | null = null;
 
-  constructor(private readonly rendersService: RendersService) {}
+  constructor(
+    private readonly renderProcessorService: RenderProcessorService,
+  ) {}
 
   onModuleInit() {
     this.worker = new Worker(
@@ -28,10 +30,7 @@ export class RendersWorkerRunner implements OnModuleInit, OnModuleDestroy {
 
         this.logger.log(`Processing render ${renderId}`);
 
-        await this.rendersService.process(userId, renderId);
-
-        // TODO: provider real aqui no futuro
-        await this.rendersService.complete(userId, renderId);
+        await this.renderProcessorService.processRender(userId, renderId);
       },
       { connection: bullConnection },
     );

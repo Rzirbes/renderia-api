@@ -2,9 +2,9 @@
 import { Module, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { Worker } from 'bullmq';
 
-import { RendersService } from '../modules/renders/renders.service';
 import { startRendersWorker } from './workers/renders.worker';
 import { RendersModule } from 'src/modules/renders/renders.module';
+import { RenderProcessorService } from 'src/modules/renders/render-processor.service';
 
 @Module({
   providers: [],
@@ -14,10 +14,12 @@ import { RendersModule } from 'src/modules/renders/renders.module';
 export class QueueModule implements OnModuleInit, OnModuleDestroy {
   private workers: Worker[] = [];
 
-  constructor(private readonly rendersService: RendersService) {}
+  constructor(
+    private readonly renderProcessorService: RenderProcessorService,
+  ) {}
 
   onModuleInit() {
-    const rendersWorker = startRendersWorker(this.rendersService);
+    const rendersWorker = startRendersWorker(this.renderProcessorService);
     this.workers.push(rendersWorker);
   }
 

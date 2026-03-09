@@ -57,6 +57,10 @@ model Render {
   userId              String
   user                User         @relation(fields: [userId], references: [id])
 
+  parentRenderId      String?
+  parentRender        Render?      @relation("RenderVersions", fields: [parentRenderId], references: [id])
+  derivedRenders      Render[]     @relation("RenderVersions")
+
   originalImageUrl    String
   originalImagePath   String?
   generatedImageUrl   String?
@@ -87,6 +91,7 @@ model Render {
   events              RenderEvent[]
 
   @@index([userId, createdAt])
+  @@index([parentRenderId])
   @@index([traceId])
   @@index([clientRequestId])
   @@index([status, createdAt])
