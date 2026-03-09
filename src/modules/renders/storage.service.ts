@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, isAbsolute } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 
 @Injectable()
 export class StorageService {
@@ -9,7 +9,11 @@ export class StorageService {
     filePath: string,
     mimeType: string,
   ): Promise<{ buffer: Buffer; mimeType: string }> {
-    const buffer = await readFile(filePath);
+    const resolvedPath = isAbsolute(filePath)
+      ? filePath
+      : join(process.cwd(), filePath);
+
+    const buffer = await readFile(resolvedPath);
 
     return {
       buffer,
@@ -48,19 +52,23 @@ export class StorageService {
     buffer: Buffer;
     mimeType: string;
   }): Promise<{ url: string; path: string; mimeType: string }> {
-    const uploadsDir = join(process.cwd(), 'uploads', 'originals');
+    this.validateImageMimeType(params.mimeType);
 
+    const uploadsDir = join(process.cwd(), 'uploads', 'originals');
     await mkdir(uploadsDir, { recursive: true });
 
     const extension = this.getExtensionFromMimeType(params.mimeType);
     const fileName = `${randomUUID()}.${extension}`;
-    const fullPath = join(uploadsDir, fileName);
+    const relativePath = join('uploads', 'originals', fileName);
+    const fullPath = join(process.cwd(), relativePath);
 
     await writeFile(fullPath, params.buffer);
 
+    const appUrl = process.env.APP_URL ?? 'http://localhost:3333';
+
     return {
-      path: fullPath,
-      url: `/uploads/originals/${fileName}`,
+      path: relativePath,
+      url: `${appUrl}/uploads/originals/${fileName}`,
       mimeType: params.mimeType,
     };
   }
@@ -70,21 +78,33 @@ export class StorageService {
     buffer: Buffer;
     mimeType: string;
   }): Promise<{ url: string; path: string; mimeType: string }> {
-    const uploadsDir = join(process.cwd(), 'uploads', 'renders');
+    this.validateImageMimeType(params.mimeType);
 
+    const uploadsDir = join(process.cwd(), 'uploads', 'renders');
     await mkdir(uploadsDir, { recursive: true });
 
     const extension = this.getExtensionFromMimeType(params.mimeType);
     const fileName = `${params.renderId}-${randomUUID()}.${extension}`;
-    const fullPath = join(uploadsDir, fileName);
+    const relativePath = join('uploads', 'renders', fileName);
+    const fullPath = join(process.cwd(), relativePath);
 
     await writeFile(fullPath, params.buffer);
 
+    const appUrl = process.env.APP_URL ?? 'http://localhost:3000';
+
     return {
-      path: fullPath,
-      url: `/uploads/renders/${fileName}`,
+      path: relativePath,
+      url: `${appUrl}/uploads/renders/${fileName}`,
       mimeType: params.mimeType,
     };
+  }
+
+  private validateImageMimeType(mimeType: string) {
+    if (!mimeType.startsWith('image/')) {
+      throw new BadRequestException(
+        `Tipo de arquivo inválido para upload: ${mimeType}`,
+      );
+    }
   }
 
   private getExtensionFromMimeType(mimeType: string): string {
@@ -97,7 +117,9 @@ export class StorageService {
       case 'image/webp':
         return 'webp';
       default:
-        return 'bin';
+        throw new BadRequestException(
+          `Formato de imagem não suportado: ${mimeType}`,
+        );
     }
   }
 }
