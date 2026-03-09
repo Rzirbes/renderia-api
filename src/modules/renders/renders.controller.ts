@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   DefaultValuePipe,
@@ -12,7 +13,9 @@ import {
   ParseUUIDPipe,
   Post,
   Query,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt.guard';
 import { CreateRenderDto } from './dto/create-render.dto';
@@ -33,6 +36,7 @@ import {
 import { CurrentUser } from '../../common/decorators/auth/current-user.decorator';
 import { FailRenderDto } from './dto/fail-render.dto';
 import { RenderProcessorService } from './render-processor.service';
+import { FileInterceptor } from '@nestjs/platform-express';
 
 type JwtPayload = { userId: string; email: string };
 
@@ -46,22 +50,28 @@ export class RendersController {
     private readonly renderProcessorService: RenderProcessorService,
   ) {}
 
+  @Post('upload')
+  @UseInterceptors(FileInterceptor('file'))
+  async upload(@UploadedFile() file?: Express.Multer.File) {
+    if (!file) {
+      throw new BadRequestException('Arquivo não enviado.');
+    }
+
+    const uploaded = await this.storageService.uploadOriginalImage({
+      buffer: file.buffer,
+      mimeType: file.mimetype,
+    });
+
+    return uploaded;
+  }
+
   @Post()
   @SwaggerCreateRender()
   async create(@CurrentUser() user: JwtPayload, @Body() dto: CreateRenderDto) {
-    const downloaded = await this.storageService.downloadFromUrl(
-      dto.originalImageUrl,
-    );
-
-    const originalImage = await this.storageService.uploadOriginalImage({
-      buffer: downloaded.buffer,
-      mimeType: downloaded.mimeType,
-    });
-
     const render = await this.rendersService.create(user.userId, dto, {
-      url: originalImage.url,
-      path: originalImage.path,
-      mimeType: originalImage.mimeType,
+      url: dto.originalImageUrl,
+      path: dto.originalImagePath,
+      mimeType: dto.originalImageMimeType,
     });
 
     return toRenderResponse(render);

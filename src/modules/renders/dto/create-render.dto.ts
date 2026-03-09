@@ -3,37 +3,43 @@ import {
   IsInt,
   IsOptional,
   IsString,
-  IsUrl,
   Max,
   MaxLength,
   Min,
 } from 'class-validator';
-import type { RenderPresetId } from '../render-presets';
 
 const RENDER_PRESET_IDS = ['daylight_9am', 'blue_hour'] as const;
 
 export class CreateRenderDto {
-  @IsUrl()
-  originalImageUrl!: string;
-
-  @IsOptional()
   @IsString()
-  @MaxLength(4000)
+  @MaxLength(1000)
+  @IsOptional()
   prompt?: string;
 
   @IsOptional()
-  @IsString()
   @IsIn(RENDER_PRESET_IDS)
-  presetId?: RenderPresetId;
+  presetId?: (typeof RENDER_PRESET_IDS)[number];
 
   @IsOptional()
   @IsInt()
-  @Min(1)
+  @Min(0)
   @Max(100)
   creditsToUse?: number;
 
   @IsOptional()
   @IsString()
-  @MaxLength(64)
+  @MaxLength(128)
   clientRequestId?: string;
+
+  @IsString()
+  @MaxLength(512)
+  originalImagePath!: string;
+
+  @IsString()
+  @MaxLength(128)
+  originalImageMimeType!: string;
+
+  @IsString()
+  @MaxLength(512)
+  originalImageUrl!: string;
 }
