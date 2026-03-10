@@ -4,7 +4,13 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, Render, RenderEventType, RenderStatus } from '@prisma/client';
+import {
+  Prisma,
+  Render,
+  RenderEventType,
+  RenderStatus,
+  CreditTxType,
+} from '@prisma/client';
 
 import { PrismaService } from '../../database/prisma/prisma.service';
 import { CreateRenderDto } from './dto/create-render.dto';
@@ -92,6 +98,17 @@ export class RendersService {
 
   constructor(private readonly prisma: PrismaService) {}
 
+  private getCreditsCost(render: {
+    parentRenderId?: string | null;
+    presetId?: string | null;
+  }): number {
+    if (render.parentRenderId) {
+      return 1;
+    }
+
+    return 1;
+  }
+
   async create(
     userId: string,
     dto: CreateRenderDto,
@@ -120,7 +137,7 @@ export class RendersService {
         sourceImageMimeType: originalImage.mimeType,
         prompt: dto.prompt ?? null,
         presetId,
-        creditsUsed: dto.creditsToUse ?? 0,
+        creditsUsed: 0,
         clientRequestId: dto.clientRequestId ?? null,
         status: RenderStatus.PENDING,
         generatedImageUrl: null,
@@ -218,8 +235,49 @@ export class RendersService {
     const now = new Date();
 
     return this.prisma.$transaction(async (tx) => {
-      const res = await tx.render.updateMany({
-        where: { id, userId, status: RenderStatus.PENDING },
+      const render = await tx.render.findFirst({
+        where: { id, userId },
+      });
+
+      if (!render) {
+        return null;
+      }
+
+      if (render.status !== RenderStatus.PENDING) {
+        return render;
+      }
+
+      const creditsToUse = this.getCreditsCost(render);
+
+      const updatedUser = await tx.user.updateMany({
+        where: {
+          id: userId,
+          credits: { gte: creditsToUse },
+        },
+        data: {
+          credits: { decrement: creditsToUse },
+        },
+      });
+
+      if (updatedUser.count === 0) {
+        throw new BadRequestException('Insufficient credits');
+      }
+
+      await tx.creditTransaction.create({
+        data: {
+          userId,
+          type: CreditTxType.USAGE,
+          amount: -creditsToUse,
+          meta: {
+            renderId: render.id,
+            action: render.parentRenderId ? 'EDIT_RENDER' : 'CREATE_RENDER',
+            presetId: render.presetId,
+          },
+        },
+      });
+
+      await tx.render.update({
+        where: { id: render.id },
         data: {
           status: RenderStatus.PROCESSING,
           startedAt: now,
@@ -227,21 +285,23 @@ export class RendersService {
           errorCode: null,
           errorMessage: null,
           errorMeta: Prisma.DbNull,
+          creditsUsed: creditsToUse,
         },
       });
 
-      if (res.count > 0) {
-        await tx.renderEvent.create({
-          data: {
-            renderId: id,
-            type: RenderEventType.PROCESSING_STARTED,
-            fromStatus: RenderStatus.PENDING,
-            toStatus: RenderStatus.PROCESSING,
-            message: 'Processamento iniciado',
-            meta: { at: now.toISOString() },
+      await tx.renderEvent.create({
+        data: {
+          renderId: id,
+          type: RenderEventType.PROCESSING_STARTED,
+          fromStatus: RenderStatus.PENDING,
+          toStatus: RenderStatus.PROCESSING,
+          message: 'Processamento iniciado',
+          meta: {
+            at: now.toISOString(),
+            creditsUsed: creditsToUse,
           },
-        });
-      }
+        },
+      });
 
       return tx.render.findFirst({ where: { id, userId } });
     });
@@ -391,6 +451,7 @@ export class RendersService {
         originalImageUrl: render.generatedImageUrl,
         originalImagePath: render.generatedImagePath,
         sourceImageMimeType: render.outputImageMimeType,
+        creditsUsed: 0,
       },
     });
 
