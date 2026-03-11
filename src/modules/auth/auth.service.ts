@@ -136,16 +136,10 @@ export class AuthService {
 
     const resetLink = `${frontUrl}/${locale}/reset-password?token=${encodeURIComponent(token)}`;
 
-    console.log('[FORGOT] locale:', locale);
-    console.log('[FORGOT] resetLink:', resetLink);
-    console.log('[FORGOT] calling MailService');
-
     await this.mail.sendResetPasswordEmail({
       to: user.email,
       resetLink,
     });
-
-    console.log('[FORGOT] MailService finished');
 
     if (process.env.NODE_ENV !== 'production') {
       return { ok: true, token, resetLink };
