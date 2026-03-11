@@ -111,7 +111,11 @@ export class AuthService {
       select: { id: true, email: true },
     });
 
+    console.log('[FORGOT] user found:', !!user);
+    console.log('[FORGOT] user id:', user?.id ?? null);
+
     if (!user) {
+      console.log('[FORGOT] user not found, returning ok');
       return { ok: true };
     }
 
@@ -132,10 +136,16 @@ export class AuthService {
 
     const resetLink = `${frontUrl}/${locale}/reset-password?token=${encodeURIComponent(token)}`;
 
+    console.log('[FORGOT] locale:', locale);
+    console.log('[FORGOT] resetLink:', resetLink);
+    console.log('[FORGOT] calling MailService');
+
     await this.mail.sendResetPasswordEmail({
       to: user.email,
       resetLink,
     });
+
+    console.log('[FORGOT] MailService finished');
 
     if (process.env.NODE_ENV !== 'production') {
       return { ok: true, token, resetLink };
