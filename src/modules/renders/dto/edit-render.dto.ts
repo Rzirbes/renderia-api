@@ -1,6 +1,10 @@
 import { IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
 
-const RENDER_PRESET_IDS = ['daylight_9am', 'blue_hour'] as const;
+const RENDER_PRESET_IDS = [
+  'daylight_9am',
+  'blue_hour',
+  'exterior_daylight_locked',
+] as const;
 
 export class EditRenderDto {
   @IsOptional()
