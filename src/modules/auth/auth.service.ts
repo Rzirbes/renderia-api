@@ -95,7 +95,7 @@ export class AuthService {
     return { user };
   }
 
-  async forgotPassword(input: { email: string }) {
+  async forgotPassword(input: { email: string; locale?: string }) {
     const user = await this.prisma.user.findUnique({
       where: { email: input.email },
       select: { id: true, email: true },
@@ -117,8 +117,10 @@ export class AuthService {
       },
     });
 
-    const frontUrl = process.env.FRONT_URL ?? 'http://localhost:3000';
-    const resetLink = `${frontUrl}/reset-password?token=${encodeURIComponent(token)}`;
+    const frontUrl = process.env.FRONT_URL ?? 'http://localhost:3001';
+    const locale = input.locale?.trim() || 'pt-BR';
+
+    const resetLink = `${frontUrl}/${locale}/reset-password?token=${encodeURIComponent(token)}`;
 
     await this.mail.sendResetPasswordEmail({
       to: user.email,
