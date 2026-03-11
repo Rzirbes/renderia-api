@@ -127,8 +127,6 @@ export class AuthService {
       },
     });
 
-    console.log('[MAIL] resend result:', result);
-
     const frontUrl = process.env.FRONT_URL ?? 'http://localhost:3001';
     const locale = input.locale?.trim() || 'pt-BR';
 
