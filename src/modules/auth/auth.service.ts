@@ -96,6 +96,16 @@ export class AuthService {
   }
 
   async forgotPassword(input: { email: string; locale?: string }) {
+    console.log('[FORGOT] start');
+    console.log('[FORGOT] email:', input.email);
+    console.log('[FORGOT] FRONT_URL:', process.env.FRONT_URL);
+    console.log(
+      '[FORGOT] RESEND_API_KEY exists:',
+      !!process.env.RESEND_API_KEY,
+    );
+    console.log('[FORGOT] EMAIL_FROM_EMAIL:', process.env.EMAIL_FROM_EMAIL);
+    console.log('[FORGOT] EMAIL_FROM_NAME:', process.env.EMAIL_FROM_NAME);
+
     const user = await this.prisma.user.findUnique({
       where: { email: input.email },
       select: { id: true, email: true },
@@ -116,6 +126,8 @@ export class AuthService {
         resetPasswordExpiresAt: expiresAt,
       },
     });
+
+    console.log('[MAIL] resend result:', result);
 
     const frontUrl = process.env.FRONT_URL ?? 'http://localhost:3001';
     const locale = input.locale?.trim() || 'pt-BR';
