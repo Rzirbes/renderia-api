@@ -1,7 +1,8 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { UserRepository } from '../../domain/repositories/user.repository';
 import { HashService } from '../../domain/services/hash.service';
 import { TokenService } from '../../domain/services/token.service';
+import { InvalidCredentialsError } from '../../domain/errors/invalid-credentials.error';
 
 type LoginUseCaseInput = {
   email: string;
@@ -31,7 +32,7 @@ export class LoginUseCase {
     const user = await this.userRepository.findByEmail(input.email);
 
     if (!user) {
-      throw new UnauthorizedException('Credenciais inválidas');
+      throw new InvalidCredentialsError();
     }
 
     const passwordMatches = await this.hashService.compare(
@@ -40,7 +41,7 @@ export class LoginUseCase {
     );
 
     if (!passwordMatches) {
-      throw new UnauthorizedException('Credenciais inválidas');
+      throw new InvalidCredentialsError();
     }
 
     const accessToken = await this.tokenService.sign({

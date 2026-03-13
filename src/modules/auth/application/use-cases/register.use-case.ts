@@ -1,10 +1,11 @@
 import { randomUUID } from 'crypto';
-import { ConflictException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 
 import { User } from '../../domain/entities/auth-user.entity';
 import { UserRepository } from '../../domain/repositories/user.repository';
 import { HashService } from '../../domain/services/hash.service';
 import { TokenService } from '../../domain/services/token.service';
+import { EmailAlreadyInUseError } from '../../domain/errors/email-already-in-use.error';
 
 interface RegisterInput {
   name?: string;
@@ -24,7 +25,7 @@ export class RegisterUseCase {
     const exists = await this.userRepository.findByEmail(input.email);
 
     if (exists) {
-      throw new ConflictException('E-mail já cadastrado');
+      throw new EmailAlreadyInUseError();
     }
 
     const passwordHash = await this.hashService.hash(input.password);

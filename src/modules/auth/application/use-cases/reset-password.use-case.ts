@@ -1,8 +1,9 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { createHash } from 'crypto';
 
 import { UserRepository } from '../../domain/repositories/user.repository';
 import { HashService } from '../../domain/services/hash.service';
+import { InvalidOrExpiredResetTokenError } from '../../domain/errors/invalid-or-expired-reset-token.error';
 
 type ResetPasswordInput = {
   token: string;
@@ -23,7 +24,7 @@ export class ResetPasswordUseCase {
       await this.userRepository.findByResetPasswordTokenHash(tokenHash);
 
     if (!user) {
-      throw new BadRequestException('Token inválido ou expirado');
+      throw new InvalidOrExpiredResetTokenError();
     }
 
     const newPasswordHash = await this.hashService.hash(input.newPassword);

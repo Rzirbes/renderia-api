@@ -2,8 +2,7 @@ import { Module } from '@nestjs/common';
 import { PassportModule } from '@nestjs/passport';
 import { JwtModule } from '@nestjs/jwt';
 
-import { AuthController } from './auth.controller';
-import { AuthService } from './auth.service';
+import { AuthController } from './controllers/auth.controller';
 import { JwtStrategy } from './infrastructure/strategies/jwt.strategy';
 
 import { MailModule } from '../mail/mail.module';
@@ -17,15 +16,14 @@ import { RegisterUseCase } from './application/use-cases/register.use-case';
 import { ForgotPasswordUseCase } from './application/use-cases/forgot-password.use-case';
 import { ResetPasswordUseCase } from './application/use-cases/reset-password.use-case';
 import { HashService } from './domain/services/hash.service';
-import { ArgonHashService } from './infrastructure/services/argon-hash.service';
+import { ArgonHashService } from './infrastructure/adapters/argon-hash.service';
 import { TokenService } from './domain/services/token.service';
-import { JwtTokenService } from './infrastructure/services/jwt-token.service';
+import { JwtTokenService } from './infrastructure/adapters/jwt-token.service';
 
 @Module({
   imports: [PassportModule, JwtModule.register({}), MailModule, PrismaModule],
   controllers: [AuthController],
   providers: [
-    AuthService,
     JwtStrategy,
     LoginUseCase,
     MeUseCase,

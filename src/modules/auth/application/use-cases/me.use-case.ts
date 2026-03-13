@@ -1,5 +1,6 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { UserRepository } from '../../domain/repositories/user.repository';
+import { UserNotFoundError } from '../../domain/errors/user-not-found.error';
 
 type MeUseCaseOutput = {
   user: {
@@ -19,7 +20,7 @@ export class MeUseCase {
     const user = await this.userRepository.findById(userId);
 
     if (!user) {
-      throw new UnauthorizedException('Usuário não encontrado');
+      throw new UserNotFoundError();
     }
 
     return {
