@@ -1,8 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
-import { RegisterDto } from './dto/register.dto';
-import { LoginDto } from './dto/login.dto';
+import { RegisterDto } from './application/dto/register.dto';
+import { LoginDto } from './application/dto/login.dto';
 
 type RegisterResult = { id: string; email: string };
 type LoginResult = { accessToken: string };

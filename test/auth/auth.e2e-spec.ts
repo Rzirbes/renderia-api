@@ -9,7 +9,7 @@ import { Test } from '@nestjs/testing';
 import { Request } from 'express';
 
 import { AppModule } from '../../src/app.module';
-import { JwtAuthGuard } from '../../src/modules/auth/guards/jwt.guard';
+import { JwtAuthGuard } from '../../src/modules/auth/infrastructure/guards/jwt.guard';
 import { PrismaService } from '../../src/database/prisma/prisma.service';
 import { AuthService } from '../../src/modules/auth/auth.service';
 

@@ -9,7 +9,7 @@ import {
 } from '@nestjs/common';
 import { Request } from 'express';
 import { CreditsService } from './credits.service';
-import { JwtAuthGuard } from '../auth/guards/jwt.guard';
+import { JwtAuthGuard } from '../auth/infrastructure/guards/jwt.guard';
 import { AddCreditsDto } from './dto/add-credits.dto';
 import { UseCreditsDto } from './dto/use-credits.dto';
 import { ListTxsDto } from './dto/list-txs.dto';

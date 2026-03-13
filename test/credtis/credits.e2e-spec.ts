@@ -9,7 +9,7 @@ import { Test } from '@nestjs/testing';
 import { Request } from 'express';
 
 import { AppModule } from '../../src/app.module';
-import { JwtAuthGuard } from '../../src/modules/auth/guards/jwt.guard';
+import { JwtAuthGuard } from '../../src/modules/auth/infrastructure/guards/jwt.guard';
 import { CreditsService } from '../../src/modules/credits/credits.service';
 
 type JwtUser = { userId: string; email: string };

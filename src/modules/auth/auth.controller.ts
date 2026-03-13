@@ -1,11 +1,11 @@
 import { Body, Controller, Get, Post, Res, UseGuards } from '@nestjs/common';
 import { AuthService } from './auth.service';
-import { RegisterDto } from './dto/register.dto';
-import { JwtAuthGuard } from './guards/jwt.guard';
+import { RegisterDto } from './application/dto/register.dto';
+import { JwtAuthGuard } from './infrastructure/guards/jwt.guard';
 import { CurrentUser } from '../../common/decorators/auth/current-user.decorator';
-import { LoginDto } from './dto/login.dto';
-import { ResetPasswordDto } from './dto/reset-password.dto';
-import { ForgotPasswordDto } from './dto/forgot-password.dto';
+import { LoginDto } from './application/dto/login.dto';
+import { ResetPasswordDto } from './application/dto/reset-password.dto';
+import { ForgotPasswordDto } from './application/dto/forgot-password.dto';
 import type { Response } from 'express';
 
 @Controller('auth')

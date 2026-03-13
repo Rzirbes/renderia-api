@@ -4,7 +4,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import type { Request } from 'express';
-import { AuthUser } from '../../../modules/auth/types/auth-user.type';
+import { AuthUser } from '../../../modules/auth/domain/types/auth-user.type';
 
 type RequestWithUser = Request & { user?: AuthUser };
 

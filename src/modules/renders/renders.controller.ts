@@ -17,7 +17,7 @@ import {
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
-import { JwtAuthGuard } from '../auth/guards/jwt.guard';
+import { JwtAuthGuard } from '../auth/infrastructure/guards/jwt.guard';
 import { CreateRenderDto } from './dto/create-render.dto';
 import { ListRendersDto } from './dto/list-renders.dto';
 import { toRenderResponse } from './dto/render-response.dto';

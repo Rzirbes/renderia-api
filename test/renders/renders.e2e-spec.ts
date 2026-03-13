@@ -11,7 +11,7 @@ import { Request } from 'express';
 import { Render, RenderStatus } from '@prisma/client';
 
 import { AppModule } from '../../src/app.module';
-import { JwtAuthGuard } from '../../src/modules/auth/guards/jwt.guard';
+import { JwtAuthGuard } from '../../src/modules/auth/infrastructure/guards/jwt.guard';
 import { RendersService } from '../../src/modules/renders/renders.service';
 import { RenderResponse } from '../../src/modules/renders/dto/render-response.dto';
 

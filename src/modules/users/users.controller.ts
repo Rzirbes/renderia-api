@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Patch, Req, UseGuards } from '@nestjs/common';
 import { Request } from 'express';
 
-import { JwtAuthGuard } from '../auth/guards/jwt.guard';
+import { JwtAuthGuard } from '../auth/infrastructure/guards/jwt.guard';
 import { UsersService } from './users.service';
 import { UpdateMeDto } from './dto/update-me.dto';
 import { toUserResponse } from './dto/user-response.dto';
