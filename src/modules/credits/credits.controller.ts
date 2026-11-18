@@ -10,7 +10,6 @@ import {
 import { Request } from 'express';
 import { CreditsService } from './credits.service';
 import { JwtAuthGuard } from '../auth/guards/jwt.guard';
-import { AddCreditsDto } from './dto/add-credits.dto';
 import { UseCreditsDto } from './dto/use-credits.dto';
 import { ListTxsDto } from './dto/list-txs.dto';
 
@@ -38,15 +37,12 @@ export class CreditsController {
     );
   }
 
-  @Post('me/add')
-  add(@Req() req: Request & { user?: JwtPayload }, @Body() dto: AddCreditsDto) {
-    return this.creditsService.addCredits({
-      userId: req.user!.userId,
-      amount: dto.amount,
-      type: dto.type,
-      meta: dto.meta,
-    });
-  }
+  // SEGURANÇA: não existe rota HTTP para adicionar créditos.
+  // O antigo `POST /credits/me/add` deixava qualquer usuário autenticado
+  // aumentar o próprio saldo sem limite. Créditos (BONUS/PURCHASE/REFUND)
+  // só podem ser concedidos por código do servidor via
+  // `CreditsService.addCredits` (ex.: um futuro webhook de pagamento
+  // verificado ou um script operacional executado fora da API pública).
 
   @Post('me/use')
   use(@Req() req: Request & { user?: JwtPayload }, @Body() dto: UseCreditsDto) {

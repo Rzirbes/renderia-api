@@ -35,15 +35,23 @@ export class CreateRenderDto {
   @MaxLength(128)
   clientRequestId?: string;
 
+  /**
+   * `path` retornado por `POST /renders/upload`
+   * (uploads/originals/<userId>/<uuid>.<ext>). Validado pelo servidor.
+   */
   @IsString()
   @MaxLength(512)
   originalImagePath!: string;
 
+  /** Ignorado: o MIME é detectado pelo conteúdo do arquivo. */
+  @IsOptional()
   @IsString()
   @MaxLength(128)
-  originalImageMimeType!: string;
+  originalImageMimeType?: string;
 
+  /** Ignorado: a URL é derivada do path validado. */
+  @IsOptional()
   @IsString()
   @MaxLength(512)
-  originalImageUrl!: string;
+  originalImageUrl?: string;
 }
