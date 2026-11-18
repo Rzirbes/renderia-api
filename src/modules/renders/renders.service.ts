@@ -16,14 +16,14 @@ import { PrismaService } from '../../database/prisma/prisma.service';
 import { CreateRenderDto } from './dto/create-render.dto';
 import { ListRendersDto } from './dto/list-renders.dto';
 import { PaginatedResult } from '../../common/pagination/paginated-result';
-import { rendersQueue } from './renders.queue';
+import { enqueueRenderJob } from './renders.queue';
 import { RENDER_PRESETS, RenderPresetId } from './render-presets';
 import { EditRenderDto } from './dto/edit-render.dto';
 
 type FailReason = {
   code?: string;
   message: string;
-  meta?: unknown;
+  meta?: Prisma.InputJsonValue;
 };
 
 type NormalizedError = {
@@ -40,13 +40,33 @@ type RequeueResult = {
   failed: number;
 };
 
-function isJobAlreadyExistsError(err: unknown): boolean {
-  const e = normalizeError(err);
-  const msg = e.message.toLowerCase();
+/**
+ * Resultado do claim atômico PENDING -> PROCESSING.
+ *
+ * Só `claimed` autoriza chamar o Gemini. Qualquer outro resultado significa
+ * que outro executor já assumiu (ou concluiu) o render, ou que ele não pode
+ * ser processado.
+ */
+export type ClaimResult =
+  | { outcome: 'claimed'; render: Render }
+  | { outcome: 'not-found' }
+  | { outcome: 'not-pending'; render: Render }
+  | { outcome: 'insufficient-credits'; render: Render };
 
-  // BullMQ costuma lançar algo nessa linha quando jobId duplica
-  return msg.includes('already exists') || msg.includes('exists');
-}
+export type FailResult = {
+  /** true se ESTA chamada fez a transição PROCESSING -> ERROR. */
+  failed: boolean;
+  refundedCredits: number;
+  render: Render | null;
+};
+
+export type CompleteResult = {
+  /** true se ESTA chamada fez a transição PROCESSING -> DONE. */
+  completed: boolean;
+  render: Render | null;
+};
+
+export const INSUFFICIENT_CREDITS_MESSAGE = 'Insufficient credits';
 
 function normalizeError(err: unknown): NormalizedError {
   // Error padrão (throw new Error)
@@ -109,6 +129,22 @@ export class RendersService {
     return 1;
   }
 
+  /**
+   * Verificação antecipada (não vinculante) de saldo, apenas para UX: evita
+   * criar/enfileirar render que certamente falharia. A garantia real de saldo
+   * é o débito condicional dentro de `claimForProcessing`.
+   */
+  private async assertHasCredits(userId: string, cost: number) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { credits: true },
+    });
+
+    if (!user || user.credits < cost) {
+      throw new BadRequestException(INSUFFICIENT_CREDITS_MESSAGE);
+    }
+  }
+
   async create(
     userId: string,
     dto: CreateRenderDto,
@@ -128,6 +164,8 @@ export class RendersService {
 
     const presetId: RenderPresetId = dto.presetId ?? 'daylight_9am';
     const preset = RENDER_PRESETS[presetId];
+
+    await this.assertHasCredits(userId, this.getCreditsCost({ presetId }));
 
     const render = await this.prisma.render.create({
       data: {
@@ -155,31 +193,27 @@ export class RendersService {
       },
     });
 
+    await this.enqueue(render);
+
+    return render;
+  }
+
+  /**
+   * Enfileira um render PENDING de forma idempotente (jobId = renderId).
+   * Falha de enfileiramento não perde o render: ele continua PENDING, o
+   * evento é registrado e a recuperação periódica (`requeuePendings`) tenta
+   * de novo.
+   */
+  async enqueue(render: Pick<Render, 'id' | 'userId'>): Promise<boolean> {
     try {
-      await rendersQueue.add(
-        'render-job',
-        { renderId: render.id, userId },
-        {
-          jobId: render.id,
-          attempts: 3,
-          backoff: { type: 'exponential', delay: 5000 },
-        },
-      );
+      await enqueueRenderJob({ renderId: render.id, userId: render.userId });
+      return true;
     } catch (err: unknown) {
       const e = normalizeError(err);
 
       this.logger.warn(
         `Queue enqueue failed for render=${render.id}: ${e.message}`,
       );
-
-      const meta: Prisma.InputJsonObject = {
-        at: new Date().toISOString(),
-        error: {
-          message: e.message,
-          code: e.code,
-          name: e.name,
-        },
-      };
 
       await this.prisma.renderEvent.create({
         data: {
@@ -188,12 +222,19 @@ export class RendersService {
           fromStatus: RenderStatus.PENDING,
           toStatus: RenderStatus.PENDING,
           message: 'Falha ao enfileirar; será reprocessado automaticamente',
-          meta,
+          meta: {
+            at: new Date().toISOString(),
+            error: {
+              message: e.message,
+              code: e.code,
+              name: e.name,
+            },
+          },
         },
       });
-    }
 
-    return render;
+      return false;
+    }
   }
 
   async list(
@@ -228,39 +269,85 @@ export class RendersService {
   }
 
   /**
-   * Enfileira/começa: PENDING -> PROCESSING
-   * Idempotente: se não mudar nada, só retorna o estado atual.
+   * Claim atômico PENDING -> PROCESSING com débito de créditos, numa única
+   * transação. É o ÚNICO ponto que autoriza uma chamada ao Gemini.
+   *
+   * Concorrência: o `updateMany ... WHERE status = PENDING` adquire o lock da
+   * linha. Uma transação concorrente bloqueia nesse UPDATE e, quando a
+   * primeira confirma, o PostgreSQL reavalia o WHERE (READ COMMITTED) e
+   * atualiza 0 linhas. Assim só um executor recebe `claimed` e só um débito
+   * é feito, independentemente de quantos workers/requisições/retries
+   * chegarem ao mesmo tempo.
    */
-  async process(userId: string, id: string): Promise<Render | null> {
+  async claimForProcessing(userId: string, id: string): Promise<ClaimResult> {
     const now = new Date();
 
     return this.prisma.$transaction(async (tx) => {
-      const render = await tx.render.findFirst({
-        where: { id, userId },
-      });
+      const render = await tx.render.findFirst({ where: { id, userId } });
 
       if (!render) {
-        return null;
+        return { outcome: 'not-found' as const };
       }
 
       if (render.status !== RenderStatus.PENDING) {
-        return render;
+        return { outcome: 'not-pending' as const, render };
       }
 
       const creditsToUse = this.getCreditsCost(render);
 
-      const updatedUser = await tx.user.updateMany({
-        where: {
-          id: userId,
-          credits: { gte: creditsToUse },
-        },
+      const claimed = await tx.render.updateMany({
+        where: { id, userId, status: RenderStatus.PENDING },
         data: {
-          credits: { decrement: creditsToUse },
+          status: RenderStatus.PROCESSING,
+          startedAt: now,
+          failedAt: null,
+          errorCode: null,
+          errorMessage: null,
+          errorMeta: Prisma.DbNull,
+          creditsUsed: creditsToUse,
         },
       });
 
-      if (updatedUser.count === 0) {
-        throw new BadRequestException('Insufficient credits');
+      if (claimed.count === 0) {
+        // Outro executor fez o claim entre a leitura e o UPDATE.
+        const current = await tx.render.findFirst({ where: { id, userId } });
+        if (!current) return { outcome: 'not-found' as const };
+        return { outcome: 'not-pending' as const, render: current };
+      }
+
+      const debited = await tx.user.updateMany({
+        where: { id: userId, credits: { gte: creditsToUse } },
+        data: { credits: { decrement: creditsToUse } },
+      });
+
+      if (debited.count === 0) {
+        // Sem saldo: estado terminal, nada cobrado, Gemini não é chamado.
+        const failedRender = await tx.render.update({
+          where: { id },
+          data: {
+            status: RenderStatus.ERROR,
+            creditsUsed: 0,
+            failedAt: now,
+            errorCode: 'INSUFFICIENT_CREDITS',
+            errorMessage: 'Créditos insuficientes para processar o render.',
+          },
+        });
+
+        await tx.renderEvent.create({
+          data: {
+            renderId: id,
+            type: RenderEventType.FAILED,
+            fromStatus: RenderStatus.PENDING,
+            toStatus: RenderStatus.ERROR,
+            message: 'Créditos insuficientes',
+            meta: { code: 'INSUFFICIENT_CREDITS', at: now.toISOString() },
+          },
+        });
+
+        return {
+          outcome: 'insufficient-credits' as const,
+          render: failedRender,
+        };
       }
 
       await tx.creditTransaction.create({
@@ -273,19 +360,6 @@ export class RendersService {
             action: render.parentRenderId ? 'EDIT_RENDER' : 'CREATE_RENDER',
             presetId: render.presetId,
           },
-        },
-      });
-
-      await tx.render.update({
-        where: { id: render.id },
-        data: {
-          status: RenderStatus.PROCESSING,
-          startedAt: now,
-          failedAt: null,
-          errorCode: null,
-          errorMessage: null,
-          errorMeta: Prisma.DbNull,
-          creditsUsed: creditsToUse,
         },
       });
 
@@ -303,62 +377,15 @@ export class RendersService {
         },
       });
 
-      return tx.render.findFirst({ where: { id, userId } });
+      const updated = await tx.render.findFirst({ where: { id, userId } });
+      return { outcome: 'claimed' as const, render: updated ?? render };
     });
   }
 
   /**
-   * Worker fake: PROCESSING -> DONE
+   * PROCESSING -> DONE, condicional. Só deve ser chamado depois que a imagem
+   * gerada foi validada e persistida no storage.
    */
-  /*  async complete(
-    userId: string,
-    id: string,
-    generatedImage: {
-      url: string;
-      path: string;
-      mimeType: string;
-    },
-  ): Promise<Render | null> {
-    const now = new Date();
-
-    return this.prisma.$transaction(async (tx) => {
-      const res = await tx.render.updateMany({
-        where: { id, userId, status: RenderStatus.PROCESSING },
-        data: {
-          status: RenderStatus.DONE,
-          generatedImageUrl: generatedImage.url,
-          generatedImagePath: generatedImage.path,
-          outputImageMimeType: generatedImage.mimeType,
-          completedAt: now,
-          failedAt: null,
-          errorCode: null,
-          errorMessage: null,
-          errorMeta: Prisma.DbNull,
-        },
-      });
-
-      if (res.count > 0) {
-        await tx.renderEvent.create({
-          data: {
-            renderId: id,
-            type: RenderEventType.COMPLETED,
-            fromStatus: RenderStatus.PROCESSING,
-            toStatus: RenderStatus.DONE,
-            message: 'Render finalizado com sucesso',
-            meta: {
-              generatedImageUrl: generatedImage.url,
-              generatedImagePath: generatedImage.path,
-              outputImageMimeType: generatedImage.mimeType,
-              at: now.toISOString(),
-            },
-          },
-        });
-      }
-
-      return tx.render.findFirst({ where: { id, userId } });
-    });
-  }
-*/
   async markAsDone(
     userId: string,
     id: string,
@@ -369,7 +396,7 @@ export class RendersService {
       sourceImageMimeType?: string | null;
       providerModel?: string | null;
     },
-  ): Promise<Render | null> {
+  ): Promise<CompleteResult> {
     const now = new Date();
 
     return this.prisma.$transaction(async (tx) => {
@@ -410,9 +437,13 @@ export class RendersService {
         });
       }
 
-      return tx.render.findFirst({ where: { id, userId } });
+      return {
+        completed: res.count > 0,
+        render: await tx.render.findFirst({ where: { id, userId } }),
+      };
     });
   }
+
   async editRender(userId: string, renderId: string, dto: EditRenderDto) {
     const render = await this.prisma.render.findFirst({
       where: {
@@ -441,6 +472,11 @@ export class RendersService {
       );
     }
 
+    await this.assertHasCredits(
+      userId,
+      this.getCreditsCost({ parentRenderId: render.id }),
+    );
+
     const newRender = await this.prisma.render.create({
       data: {
         userId,
@@ -452,21 +488,22 @@ export class RendersService {
         originalImagePath: render.generatedImagePath,
         sourceImageMimeType: render.outputImageMimeType,
         creditsUsed: 0,
-      },
-    });
-
-    await this.prisma.renderEvent.create({
-      data: {
-        renderId: newRender.id,
-        type: 'CREATED',
-        toStatus: 'PENDING',
-        message: 'Render criado a partir da edição de um render anterior.',
-        meta: {
-          parentRenderId: render.id,
-          editedFromRenderId: render.id,
+        events: {
+          create: {
+            type: 'CREATED',
+            toStatus: 'PENDING',
+            message: 'Render criado a partir da edição de um render anterior.',
+            meta: {
+              parentRenderId: render.id,
+              editedFromRenderId: render.id,
+            },
+          },
         },
       },
     });
+
+    // Edições também são processadas exclusivamente pelo worker.
+    await this.enqueue(newRender);
 
     return newRender;
   }
@@ -492,24 +529,22 @@ export class RendersService {
 
     for (const r of pendings) {
       try {
-        await rendersQueue.add(
-          'render-job',
-          { renderId: r.id, userId: r.userId },
-          {
-            jobId: r.id,
-            attempts: 3,
-            backoff: { type: 'exponential', delay: 5000 },
-          },
-        );
+        const result = await enqueueRenderJob({
+          renderId: r.id,
+          userId: r.userId,
+        });
+
+        if (result === 'already-queued') {
+          alreadyQueued++;
+          continue;
+        }
 
         enqueued++;
 
-        // se você tiver o enum REQUEUED no Prisma, usa ele.
-        // se não tiver, pode comentar isso ou reaproveitar outro tipo.
         await this.prisma.renderEvent.create({
           data: {
             renderId: r.id,
-            type: RenderEventType.REQUEUED, // <- precisa existir no enum
+            type: RenderEventType.REQUEUED,
             fromStatus: RenderStatus.PENDING,
             toStatus: RenderStatus.PENDING,
             message: `Reenfileirado automaticamente (PENDING > ${cutoffMinutes}min)`,
@@ -517,15 +552,11 @@ export class RendersService {
               at: now.toISOString(),
               cutoffMinutes,
               createdAt: r.createdAt.toISOString(),
+              result,
             },
           },
         });
       } catch (err: unknown) {
-        if (isJobAlreadyExistsError(err)) {
-          alreadyQueued++;
-          continue;
-        }
-
         failed++;
         const e = normalizeError(err);
 
@@ -557,45 +588,125 @@ export class RendersService {
   }
 
   /**
-   * Worker fake: PROCESSING -> ERROR (com motivo)
+   * PROCESSING -> ERROR com reembolso integral dos créditos debitados no
+   * claim, na MESMA transação da mudança de status.
+   *
+   * O reembolso só acontece se esta chamada fizer a transição condicional;
+   * chamadas concorrentes/repetidas (worker + recuperação de travados, retry)
+   * atualizam 0 linhas e não reembolsam de novo. `creditsUsed` é zerado, o
+   * que reflete o custo líquido do render e serve de trava adicional.
    */
-  async fail(
+  async failProcessing(
     userId: string,
     id: string,
     reason: FailReason,
-  ): Promise<Render | null> {
+  ): Promise<FailResult> {
     const now = new Date();
+    const code = reason.code ?? 'UNKNOWN_ERROR';
 
     return this.prisma.$transaction(async (tx) => {
+      const current = await tx.render.findFirst({ where: { id, userId } });
+
+      if (!current || current.status !== RenderStatus.PROCESSING) {
+        return { failed: false, refundedCredits: 0, render: current };
+      }
+
       const res = await tx.render.updateMany({
         where: { id, userId, status: RenderStatus.PROCESSING },
         data: {
           status: RenderStatus.ERROR,
           failedAt: now,
-          errorCode: reason.code ?? 'UNKNOWN_ERROR',
+          errorCode: code,
           errorMessage: reason.message,
           errorMeta: reason.meta ?? Prisma.DbNull,
+          creditsUsed: 0,
         },
       });
 
-      if (res.count > 0) {
-        await tx.renderEvent.create({
+      if (res.count === 0) {
+        return {
+          failed: false,
+          refundedCredits: 0,
+          render: await tx.render.findFirst({ where: { id, userId } }),
+        };
+      }
+
+      const refundedCredits = Math.max(current.creditsUsed, 0);
+
+      if (refundedCredits > 0) {
+        await tx.user.update({
+          where: { id: userId },
+          data: { credits: { increment: refundedCredits } },
+        });
+
+        await tx.creditTransaction.create({
           data: {
-            renderId: id,
-            type: RenderEventType.FAILED,
-            fromStatus: RenderStatus.PROCESSING,
-            toStatus: RenderStatus.ERROR,
-            message: reason.message,
-            meta: {
-              code: reason.code ?? 'UNKNOWN_ERROR',
-              at: now.toISOString(),
-              details: reason.meta ?? null,
-            },
+            userId,
+            type: CreditTxType.REFUND,
+            amount: refundedCredits,
+            meta: { renderId: id, reason: code },
           },
         });
       }
 
-      return tx.render.findFirst({ where: { id, userId } });
+      await tx.renderEvent.create({
+        data: {
+          renderId: id,
+          type: RenderEventType.FAILED,
+          fromStatus: RenderStatus.PROCESSING,
+          toStatus: RenderStatus.ERROR,
+          message: reason.message,
+          meta: {
+            code,
+            at: now.toISOString(),
+            refundedCredits,
+            details: reason.meta ?? null,
+          },
+        },
+      });
+
+      return {
+        failed: true,
+        refundedCredits,
+        render: await tx.render.findFirst({ where: { id, userId } }),
+      };
     });
+  }
+
+  /**
+   * Recupera renders presos em PROCESSING (ex.: o processo do worker morreu
+   * durante a chamada ao Gemini). Eles NÃO são reexecutados — não há como
+   * saber se o Gemini já foi cobrado/respondeu — e sim marcados como ERROR
+   * com reembolso. `olderThanMinutes` deve ser bem maior que o timeout do
+   * Gemini para não interromper um processamento ainda vivo.
+   */
+  async recoverStaleProcessing(
+    olderThanMinutes: number,
+    limit = 50,
+  ): Promise<{ found: number; recovered: number }> {
+    const cutoff = new Date(Date.now() - olderThanMinutes * 60 * 1000);
+
+    const stale = await this.prisma.render.findMany({
+      where: { status: RenderStatus.PROCESSING, startedAt: { lte: cutoff } },
+      orderBy: { startedAt: 'asc' },
+      take: limit,
+      select: { id: true, userId: true },
+    });
+
+    let recovered = 0;
+    for (const r of stale) {
+      const result = await this.failProcessing(r.userId, r.id, {
+        code: 'PROCESSING_TIMEOUT',
+        message:
+          'O processamento não foi concluído a tempo. Os créditos foram devolvidos.',
+      });
+      if (result.failed) recovered++;
+    }
+
+    if (recovered > 0) {
+      this.logger.warn(`Recovered ${recovered} stale PROCESSING render(s)`);
+    }
+
+    return { found: stale.length, recovered };
   }
 }

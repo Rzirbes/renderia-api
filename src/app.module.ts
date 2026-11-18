@@ -6,7 +6,6 @@ import { CreditsModule } from './modules/credits/credits.module';
 import { RendersModule } from './modules/renders/renders.module';
 import { ConfigModule } from '@nestjs/config';
 import { QueueModule } from './queue/queue.module';
-import { RendersWorkerRunner } from './queue/workers/renders.worker.runner';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { join } from 'path';
 
@@ -27,6 +26,5 @@ import { join } from 'path';
     RendersModule,
     QueueModule,
   ],
-  providers: [RendersWorkerRunner],
 })
 export class AppModule {}

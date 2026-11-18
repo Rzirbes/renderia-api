@@ -8,6 +8,15 @@ import {
   extractTextParts,
 } from './types/gemini.types';
 
+const DEFAULT_GEMINI_TIMEOUT_MS = 5 * 60 * 1000;
+
+export function getGeminiTimeoutMs(): number {
+  const value = Number(process.env.GEMINI_TIMEOUT_MS);
+  return Number.isFinite(value) && value > 0
+    ? value
+    : DEFAULT_GEMINI_TIMEOUT_MS;
+}
+
 @Injectable()
 export class GeminiRenderService {
   private getAi() {
@@ -19,7 +28,17 @@ export class GeminiRenderService {
       );
     }
 
-    return new GoogleGenAI({ apiKey });
+    return new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        // Limita a duração de uma chamada para que a recuperação de renders
+        // travados (RENDER_PROCESSING_STALE_MINUTES) nunca interrompa uma
+        // chamada ainda viva.
+        timeout: getGeminiTimeoutMs(),
+        // Sem retry automático no SDK: cada tentativa é uma geração cobrada.
+        retryOptions: { attempts: 1 },
+      },
+    });
   }
 
   private getErrorMessage(err: unknown) {
