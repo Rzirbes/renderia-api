@@ -99,27 +99,13 @@ describe('Credits (e2e)', () => {
     expect(body.credits).toBe(10);
   });
 
-  it('POST /credits/me/add returns 201 and adds credits', async () => {
-    creditsServiceMock.addCredits.mockResolvedValue({
-      credits: 15,
-      tx: { id: 'tx1', amount: 5, type: 'BONUS' },
-    });
-
-    const res = await request(app.getHttpServer())
+  it('POST /credits/me/add no longer exists (users cannot self-credit)', async () => {
+    await request(app.getHttpServer())
       .post('/credits/me/add')
       .send({ amount: 5, type: 'BONUS' })
-      .expect(201);
+      .expect(404);
 
-    expect(creditsServiceMock.addCredits).toHaveBeenCalledWith({
-      userId: 'u1',
-      amount: 5,
-      type: 'BONUS',
-      meta: undefined,
-    });
-
-    const body = bodyAs<AddUseResponse>(res);
-    expect(body.credits).toBe(15);
-    expect(body.tx.type).toBe('BONUS');
+    expect(creditsServiceMock.addCredits).not.toHaveBeenCalled();
   });
 
   it('POST /credits/me/use returns 201 and consumes credits', async () => {

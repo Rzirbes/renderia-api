@@ -52,12 +52,16 @@ export class RendersController {
 
   @Post('upload')
   @UseInterceptors(FileInterceptor('file'))
-  async upload(@UploadedFile() file?: Express.Multer.File) {
+  async upload(
+    @CurrentUser() user: JwtPayload,
+    @UploadedFile() file?: Express.Multer.File,
+  ) {
     if (!file) {
       throw new BadRequestException('Arquivo não enviado.');
     }
 
     const uploaded = await this.storageService.uploadOriginalImage({
+      userId: user.userId,
       buffer: file.buffer,
       mimeType: file.mimetype,
     });
@@ -68,11 +72,19 @@ export class RendersController {
   @Post()
   @SwaggerCreateRender()
   async create(@CurrentUser() user: JwtPayload, @Body() dto: CreateRenderDto) {
-    const render = await this.rendersService.create(user.userId, dto, {
-      url: dto.originalImageUrl,
-      path: dto.originalImagePath,
-      mimeType: dto.originalImageMimeType,
-    });
+    // path, URL e MIME da imagem original são derivados pelo servidor a partir
+    // de um upload do próprio usuário; `originalImageUrl` e
+    // `originalImageMimeType` enviados pelo cliente são ignorados.
+    const originalImage = await this.storageService.resolveUserOriginalImage(
+      user.userId,
+      dto.originalImagePath,
+    );
+
+    const render = await this.rendersService.create(
+      user.userId,
+      dto,
+      originalImage,
+    );
 
     return toRenderResponse(render);
   }

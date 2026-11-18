@@ -27,12 +27,22 @@ export class RenderProcessorService {
       return;
     }
 
+    let originalFile: { buffer: Buffer; mimeType: string };
     try {
-      const originalFile = await this.storageService.readLocalFile(
+      originalFile = await this.storageService.readStoredImage(
         render.originalImagePath,
-        render.sourceImageMimeType ?? 'image/png',
+        { userId: render.userId, parentRenderId: render.parentRenderId },
       );
+    } catch {
+      // Mensagem genérica: não expõe caminho nem conteúdo do arquivo.
+      await this.rendersService.fail(userId, renderId, {
+        code: 'ORIGINAL_IMAGE_INVALID',
+        message: 'Imagem original inválida, inacessível ou não autorizada.',
+      });
+      return;
+    }
 
+    try {
       const presetId = (render.presetId as RenderPresetId) ?? 'daylight_9am';
       const preset = RENDER_PRESETS[presetId];
 
