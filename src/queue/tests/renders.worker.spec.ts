@@ -1,7 +1,12 @@
 const workerInstances: Array<{ queue: string; close: jest.Mock }> = [];
+const queueInstance = {
+  add: jest.fn(),
+  close: jest.fn(),
+  disconnect: jest.fn(),
+};
 
 jest.mock('bullmq', () => ({
-  Queue: jest.fn().mockImplementation(() => ({ add: jest.fn() })),
+  Queue: jest.fn().mockImplementation(() => queueInstance),
   Worker: jest.fn().mockImplementation((queue: string) => {
     const w = { queue, close: jest.fn(), on: jest.fn() };
     workerInstances.push(w);
@@ -34,6 +39,9 @@ describe('Renders worker', () => {
     jest.clearAllMocks();
     workerInstances.length = 0;
     process.env = { ...originalEnv };
+    // Hermético: o CI define RENDERS_WORKER_ENABLED=false globalmente; cada
+    // teste decide o valor que precisa.
+    delete process.env.RENDERS_WORKER_ENABLED;
   });
 
   afterAll(() => {
@@ -49,6 +57,8 @@ describe('Renders worker', () => {
 
     await mod.onModuleDestroy();
     expect(workerInstances[0].close).toHaveBeenCalled();
+    // conexão da fila também é encerrada no shutdown
+    expect(queueInstance.close).toHaveBeenCalled();
   });
 
   it('RENDERS_WORKER_ENABLED=false não consome a fila', () => {
@@ -84,6 +94,87 @@ describe('Renders worker', () => {
         attemptsMade: 0,
       } as Job<RenderJobData>),
     ).rejects.toThrow('db down');
+  });
+
+  describe('encerramento (onModuleDestroy)', () => {
+    beforeEach(() => {
+      queueInstance.close.mockReset().mockResolvedValue(undefined);
+      queueInstance.disconnect.mockReset().mockResolvedValue(undefined);
+    });
+
+    it('fecha a fila só depois que o worker terminou os jobs ativos', async () => {
+      const order: string[] = [];
+      const mod = makeModule();
+      mod.onModuleInit();
+      let finishActiveJob!: () => void;
+      workerInstances[0].close.mockImplementation(
+        () =>
+          new Promise<void>((r) => {
+            finishActiveJob = () => {
+              order.push('worker');
+              r();
+            };
+          }),
+      );
+      queueInstance.close.mockImplementation(() => {
+        order.push('queue');
+        return Promise.resolve();
+      });
+
+      const destroying = mod.onModuleDestroy();
+      await Promise.resolve();
+      expect(queueInstance.close).not.toHaveBeenCalled();
+      finishActiveJob();
+      await destroying;
+
+      expect(order).toEqual(['worker', 'queue']);
+      expect(queueInstance.disconnect).not.toHaveBeenCalled();
+    });
+
+    it('espera o ciclo de recuperação em andamento antes de fechar a fila', async () => {
+      const order: string[] = [];
+      let release!: () => void;
+      rendersService.recoverStaleProcessing.mockImplementation(
+        () => new Promise<void>((r) => (release = r)),
+      );
+      rendersService.requeuePendings.mockImplementation(() => {
+        order.push('requeue');
+        return Promise.resolve();
+      });
+      queueInstance.close.mockImplementation(() => {
+        order.push('queue');
+        return Promise.resolve();
+      });
+
+      const mod = makeModule();
+      const recovery = mod.runRecovery();
+      const destroying = mod.onModuleDestroy();
+      await new Promise((r) => setImmediate(r));
+      expect(queueInstance.close).not.toHaveBeenCalled();
+      release();
+      await Promise.all([recovery, destroying]);
+
+      expect(order).toEqual(['requeue', 'queue']);
+    });
+
+    it('close travado (Redis sem resposta): força disconnect e não lança', async () => {
+      jest.useFakeTimers();
+      try {
+        queueInstance.close.mockReturnValue(new Promise(() => undefined));
+        const destroying = makeModule().onModuleDestroy();
+        await jest.advanceTimersByTimeAsync(5000);
+        await expect(destroying).resolves.toBeUndefined();
+        expect(queueInstance.disconnect).toHaveBeenCalledTimes(1);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('close com erro: força disconnect e não lança', async () => {
+      queueInstance.close.mockRejectedValue(new Error('ECONNRESET'));
+      await expect(makeModule().onModuleDestroy()).resolves.toBeUndefined();
+      expect(queueInstance.disconnect).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('recuperação periódica', () => {

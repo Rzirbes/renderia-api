@@ -1,0 +1,140 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Somente leitura: o workflow não publica nada, não comenta e não faz deploy.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# Nenhum secret é usado. Todos os valores abaixo são fictícios: nada aponta
+# para o Neon, Redis remoto, Gemini ou Resend. O worker do BullMQ fica
+# desligado e os testes mockam Gemini e storage.
+env:
+  JWT_SECRET: ci-only-not-a-secret
+  GEMINI_API_KEY: ci-dummy-not-a-real-key
+  RESEND_API_KEY: re_ci_dummy_not_a_real_key
+  RENDERS_WORKER_ENABLED: "false"
+  # Placeholder para `prisma generate` (não abre conexão).
+  DATABASE_URL: postgresql://ci:ci@127.0.0.1:1/renderia_ci_placeholder_test
+
+jobs:
+  checks:
+    name: Lint, typecheck, unitários e build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          version: 10
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install (lockfile congelado)
+        run: pnpm install --frozen-lockfile
+
+      - name: Prisma generate
+        run: pnpm exec prisma generate
+
+      - name: Lint (sem --fix)
+        run: pnpm exec eslint "{src,apps,libs,test}/**/*.ts"
+
+      - name: Typecheck
+        run: pnpm exec tsc --noEmit -p tsconfig.json
+
+      - name: Testes unitários
+        run: pnpm test --ci
+
+      - name: Build NestJS
+        run: pnpm build
+
+  integration:
+    name: Integração e e2e (PostgreSQL e Redis descartáveis)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      # Containers efêmeros do próprio job, destruídos ao final. Portas só no
+      # host do runner; os testes recusam hosts que não sejam locais.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: renderia_ci_test
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d renderia_ci_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 56379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://postgres:ci@127.0.0.1:55432/renderia_ci_test
+      RENDERS_IT_DATABASE_URL: postgresql://postgres:ci@127.0.0.1:55432/renderia_ci_test
+      E2E_DATABASE_URL: postgresql://postgres:ci@127.0.0.1:55432/renderia_ci_test
+      E2E_REDIS_URL: redis://127.0.0.1:56379
+      REDIS_URL: redis://127.0.0.1:56379
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          version: 10
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install (lockfile congelado)
+        run: pnpm install --frozen-lockfile
+
+      - name: Prisma generate
+        run: pnpm exec prisma generate
+
+      - name: Guarda — banco e Redis precisam ser os containers locais do job
+        run: |
+          for url in "$DATABASE_URL" "$REDIS_URL"; do
+            host=$(node -e 'console.log(new URL(process.argv[1]).hostname)' "$url")
+            if [ "$host" != "127.0.0.1" ]; then
+              echo "::error::Host não local no CI: $host"; exit 1
+            fi
+          done
+
+      - name: Aplicar migrations no PostgreSQL descartável
+        run: pnpm exec prisma migrate deploy
+
+      - name: Schema e migrations sem divergência
+        run: pnpm exec prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code
+
+      - name: Testes de integração
+        timeout-minutes: 5
+        run: pnpm test:integration --ci
+
+      - name: Testes e2e
+        timeout-minutes: 5
+        run: pnpm test:e2e --ci --runInBand
