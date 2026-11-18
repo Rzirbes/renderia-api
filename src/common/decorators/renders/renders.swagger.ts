@@ -49,9 +49,9 @@ export function SwaggerDeleteRender() {
 export function SwaggerProcessRender() {
   return applyDecorators(
     ApiOperation({
-      summary: 'Inicia o processamento de um render',
+      summary: 'Garante que um render PENDING está na fila (idempotente)',
       description:
-        'Marca o render como PROCESSING e envia para a fila de processamento.',
+        'Não executa o processamento. Para render PENDING, garante um único job na fila (jobId = renderId); para outros status apenas devolve o estado atual. Acompanhe o resultado via GET /renders/:id.',
     }),
 
     ApiParam({
@@ -62,7 +62,7 @@ export function SwaggerProcessRender() {
 
     ApiResponse({
       status: 200,
-      description: 'Render marcado como PROCESSING',
+      description: 'Estado atual do render',
     }),
 
     ApiResponse({
@@ -89,31 +89,6 @@ export function SwaggerCompleteRender() {
     ApiResponse({
       status: 200,
       description: 'Render finalizado com sucesso',
-    }),
-
-    ApiResponse({
-      status: 404,
-      description: 'Render não encontrado',
-    }),
-  );
-}
-
-export function SwaggerFailRender() {
-  return applyDecorators(
-    ApiOperation({
-      summary: 'Marca render como erro',
-      description: 'Simula falha no processamento e define status ERROR.',
-    }),
-
-    ApiParam({
-      name: 'id',
-      description: 'Render ID',
-      required: true,
-    }),
-
-    ApiResponse({
-      status: 200,
-      description: 'Render marcado como erro',
     }),
 
     ApiResponse({

@@ -4,6 +4,7 @@ import {
   open,
   readFile,
   realpath,
+  unlink,
   writeFile,
 } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -212,6 +213,24 @@ export class StorageService {
       buffer: params.buffer,
       mimeType: params.mimeType,
     });
+  }
+
+  /**
+   * Remove (best-effort) uma imagem gerada que não chegou a ser associada a
+   * um render DONE. Só aceita caminhos no formato gerado pelo servidor e
+   * dentro de `uploads/`; qualquer outra coisa é ignorada.
+   */
+  async deleteGeneratedImage(relativePath: string): Promise<void> {
+    if (typeof relativePath !== 'string' || !GENERATED_RE.test(relativePath)) {
+      return;
+    }
+
+    try {
+      const fullPath = await this.resolveInsideUploads(relativePath);
+      await unlink(fullPath);
+    } catch {
+      // Arquivo já inexistente ou inacessível: nada a fazer.
+    }
   }
 
   /**

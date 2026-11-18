@@ -30,13 +30,11 @@ import {
   SwaggerListRenders,
   SwaggerProcessRender,
   SwaggerRendersController,
-  SwaggerFailRender,
 } from '../../common/decorators/renders/renders.swagger';
 import { CurrentUser } from '../../common/decorators/auth/current-user.decorator';
-import { FailRenderDto } from './dto/fail-render.dto';
-import { RenderProcessorService } from './render-processor.service';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { EditRenderDto } from './dto/edit-render.dto';
+import { RenderStatus } from '@prisma/client';
 
 type JwtPayload = { userId: string; email: string };
 
@@ -47,7 +45,6 @@ export class RendersController {
   constructor(
     private readonly rendersService: RendersService,
     private readonly storageService: StorageService,
-    private readonly renderProcessorService: RenderProcessorService,
   ) {}
 
   @Post('upload')
@@ -110,6 +107,14 @@ export class RendersController {
     return this.rendersService.requeuePendings(safeMinutes, safeLimit);
   }
 
+  /**
+   * Mantido por compatibilidade, mas NÃO executa o Gemini: o processamento é
+   * feito exclusivamente pelo worker do BullMQ. Para render PENDING apenas
+   * garante (de forma idempotente, jobId = renderId) que existe um job na
+   * fila; para os demais status só devolve o estado atual. Chamadas
+   * repetidas ou concorrentes nunca disparam processamento ou cobrança extra.
+   * Clientes devem acompanhar o status via `GET /renders/:id`.
+   */
   @Post(':id/process')
   @HttpCode(200)
   @SwaggerProcessRender()
@@ -117,30 +122,19 @@ export class RendersController {
     @CurrentUser() user: JwtPayload,
     @Param('id', new ParseUUIDPipe()) id: string,
   ) {
-    await this.renderProcessorService.processRender(user.userId, id);
-
     const render = await this.rendersService.findById(user.userId, id);
     if (!render) throw new NotFoundException();
 
+    if (render.status === RenderStatus.PENDING) {
+      await this.rendersService.enqueue(render);
+    }
+
     return toRenderResponse(render);
   }
 
-  @Post(':id/fail')
-  @HttpCode(200)
-  @SwaggerFailRender()
-  async fail(
-    @CurrentUser() user: JwtPayload,
-    @Param('id', new ParseUUIDPipe()) id: string,
-    @Body() body: FailRenderDto,
-  ) {
-    const render = await this.rendersService.fail(user.userId, id, {
-      code: body.code,
-      message: body.message,
-    });
-
-    if (!render) throw new NotFoundException();
-    return toRenderResponse(render);
-  }
+  // `POST /renders/:id/fail` foi removido: permitia ao próprio usuário forçar
+  // PROCESSING -> ERROR (com reembolso) enquanto o Gemini ainda gerava a
+  // imagem. Falhas agora só são registradas pelo worker/recuperação.
 
   @Post(':id/edit')
   async edit(

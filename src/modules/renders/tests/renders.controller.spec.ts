@@ -1,4 +1,7 @@
-jest.mock('../renders.queue', () => ({ rendersQueue: { add: jest.fn() } }));
+jest.mock('../renders.queue', () => ({
+  rendersQueue: { add: jest.fn() },
+  enqueueRenderJob: jest.fn(),
+}));
 
 import request from 'supertest';
 import { Server } from 'http';
@@ -46,7 +49,12 @@ describe('RendersController (HTTP) — imagem original controlada pelo servidor'
   let server: Server;
   let sandbox: Awaited<ReturnType<typeof createSandbox>>;
 
-  const rendersService = { create: jest.fn() };
+  const rendersService = {
+    create: jest.fn(),
+    findById: jest.fn(),
+    enqueue: jest.fn(),
+  };
+  const renderProcessor = { processRender: jest.fn() };
   const ownPath = `uploads/originals/${USER_A}/${FILE_ID}.png`;
 
   beforeAll(async () => {
@@ -55,7 +63,7 @@ describe('RendersController (HTTP) — imagem original controlada pelo servidor'
       providers: [
         StorageService,
         { provide: RendersService, useValue: rendersService },
-        { provide: RenderProcessorService, useValue: {} },
+        { provide: RenderProcessorService, useValue: renderProcessor },
       ],
     })
       .overrideGuard(JwtAuthGuard)
@@ -71,7 +79,9 @@ describe('RendersController (HTTP) — imagem original controlada pelo servidor'
         forbidNonWhitelisted: true,
       }),
     );
-    await app.init();
+    // listen(0) em vez de init(): várias requisições simultâneas no mesmo
+    // servidor (o supertest abre um listen por requisição se não houver).
+    await app.listen(0);
     server = app.getHttpServer() as Server;
   });
 
@@ -193,5 +203,75 @@ describe('RendersController (HTTP) — imagem original controlada pelo servidor'
         contentType: 'image/png',
       })
       .expect(400);
+  });
+
+  describe('POST /renders/:id/process (não executa o Gemini)', () => {
+    const renderWith = (status: RenderStatus) => ({
+      id: RENDER_ID,
+      userId: USER_A,
+      originalImageUrl: 'x',
+      generatedImageUrl: status === RenderStatus.DONE ? 'y' : null,
+      prompt: null,
+      status,
+      creditsUsed: status === RenderStatus.PENDING ? 0 : 1,
+      traceId: null,
+      clientRequestId: null,
+      providerJobId: null,
+      providerRequestId: null,
+      startedAt: null,
+      completedAt: null,
+      failedAt: null,
+      errorCode: null,
+      errorMessage: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    it('PENDING: requisições simultâneas só garantem o job (idempotente) e nunca processam', async () => {
+      rendersService.findById.mockResolvedValue(
+        renderWith(RenderStatus.PENDING),
+      );
+      rendersService.enqueue.mockResolvedValue(true);
+
+      const responses = await Promise.all(
+        Array.from({ length: 5 }, () =>
+          request(server).post(`/renders/${RENDER_ID}/process`).expect(200),
+        ),
+      );
+
+      for (const res of responses) {
+        expect((res.body as { status: string }).status).toBe('PENDING');
+      }
+      expect(renderProcessor.processRender).not.toHaveBeenCalled();
+      expect(rendersService.findById).toHaveBeenCalledWith(USER_A, RENDER_ID);
+    });
+
+    it.each([RenderStatus.DONE, RenderStatus.PROCESSING, RenderStatus.ERROR])(
+      'render %s: devolve o estado atual sem enfileirar nem processar',
+      async (status) => {
+        rendersService.findById.mockResolvedValue(renderWith(status));
+
+        const res = await request(server)
+          .post(`/renders/${RENDER_ID}/process`)
+          .expect(200);
+
+        expect((res.body as { status: string }).status).toBe(status);
+        expect(rendersService.enqueue).not.toHaveBeenCalled();
+        expect(renderProcessor.processRender).not.toHaveBeenCalled();
+      },
+    );
+
+    it('render de outro usuário/inexistente: 404', async () => {
+      rendersService.findById.mockResolvedValue(null);
+      await request(server).post(`/renders/${RENDER_ID}/process`).expect(404);
+      expect(rendersService.enqueue).not.toHaveBeenCalled();
+    });
+  });
+
+  it('POST /renders/:id/fail não existe mais (cliente não força ERROR/reembolso)', async () => {
+    await request(server)
+      .post(`/renders/${RENDER_ID}/fail`)
+      .send({ message: 'x' })
+      .expect(404);
   });
 });
