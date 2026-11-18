@@ -63,3 +63,30 @@ export async function enqueueRenderJob(
   );
   return 'added';
 }
+
+export type RemoveRenderJobResult = 'absent' | 'removed' | 'active';
+
+/**
+ * Remove o job do render (jobId = renderId), usado após excluir o render do
+ * banco. Job ativo (travado pelo worker) não pode ser removido: o worker
+ * verá `not-found` no claim e terminará sem cobrar nem chamar o Gemini.
+ * Erros (Redis indisponível) são propagados para o chamador registrar.
+ */
+export async function removeRenderJob(
+  renderId: string,
+): Promise<RemoveRenderJobResult> {
+  const job = await rendersQueue.getJob(renderId);
+  if (!job) return 'absent';
+
+  const state = await job.getState();
+  if (state === 'active') return 'active';
+
+  try {
+    await job.remove();
+  } catch (err) {
+    // Pode ter ficado ativo entre getState e remove.
+    if ((await job.getState()) === 'active') return 'active';
+    throw err;
+  }
+  return 'removed';
+}

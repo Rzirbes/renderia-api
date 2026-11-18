@@ -4,7 +4,11 @@ jest.mock('bullmq', () => ({
   Queue: jest.fn().mockImplementation(() => queueMock),
 }));
 
-import { enqueueRenderJob, RENDER_JOB_NAME } from '../renders.queue';
+import {
+  enqueueRenderJob,
+  removeRenderJob,
+  RENDER_JOB_NAME,
+} from '../renders.queue';
 import { RENDER_ID, USER_A } from './sandbox.helper-spec';
 
 describe('enqueueRenderJob', () => {
@@ -57,5 +61,56 @@ describe('enqueueRenderJob', () => {
   it('propaga falha do Redis (o chamador registra o evento)', async () => {
     queueMock.getJob.mockRejectedValue(new Error('ECONNREFUSED'));
     await expect(enqueueRenderJob(data)).rejects.toThrow('ECONNREFUSED');
+  });
+});
+
+describe('removeRenderJob', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('sem job: absent', async () => {
+    queueMock.getJob.mockResolvedValue(undefined);
+    await expect(removeRenderJob(RENDER_ID)).resolves.toBe('absent');
+  });
+
+  it.each(['waiting', 'delayed', 'completed', 'failed'])(
+    'job %s: removido',
+    async (state) => {
+      const remove = jest.fn();
+      queueMock.getJob.mockResolvedValue({
+        getState: jest.fn().mockResolvedValue(state),
+        remove,
+      });
+      await expect(removeRenderJob(RENDER_ID)).resolves.toBe('removed');
+      expect(queueMock.getJob).toHaveBeenCalledWith(RENDER_ID);
+      expect(remove).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('job ativo: não tenta remover (o claim encontra not-found)', async () => {
+    const remove = jest.fn();
+    queueMock.getJob.mockResolvedValue({
+      getState: jest.fn().mockResolvedValue('active'),
+      remove,
+    });
+    await expect(removeRenderJob(RENDER_ID)).resolves.toBe('active');
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('ficou ativo entre getState e remove: active, sem erro', async () => {
+    queueMock.getJob.mockResolvedValue({
+      getState: jest
+        .fn()
+        .mockResolvedValueOnce('waiting')
+        .mockResolvedValueOnce('active'),
+      remove: jest.fn().mockRejectedValue(new Error('locked')),
+    });
+    await expect(removeRenderJob(RENDER_ID)).resolves.toBe('active');
+  });
+
+  it('erro do Redis é propagado', async () => {
+    queueMock.getJob.mockRejectedValue(new Error('ECONNREFUSED'));
+    await expect(removeRenderJob(RENDER_ID)).rejects.toThrow('ECONNREFUSED');
   });
 });

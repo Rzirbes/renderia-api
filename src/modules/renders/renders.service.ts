@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   Logger,
   NotFoundException,
@@ -16,7 +17,7 @@ import { PrismaService } from '../../database/prisma/prisma.service';
 import { CreateRenderDto } from './dto/create-render.dto';
 import { ListRendersDto } from './dto/list-renders.dto';
 import { PaginatedResult } from '../../common/pagination/paginated-result';
-import { enqueueRenderJob } from './renders.queue';
+import { enqueueRenderJob, removeRenderJob } from './renders.queue';
 import { RENDER_PRESETS, RenderPresetId } from './render-presets';
 import { EditRenderDto } from './dto/edit-render.dto';
 
@@ -67,6 +68,40 @@ export type CompleteResult = {
 };
 
 export const INSUFFICIENT_CREDITS_MESSAGE = 'Insufficient credits';
+
+export const IDEMPOTENCY_KEY_REUSED = 'IDEMPOTENCY_KEY_REUSED';
+
+export type CreateRenderResult = {
+  render: Render;
+  /** true quando a chave (userId, clientRequestId) já existia. */
+  replayed: boolean;
+};
+
+/**
+ * - `deleted`: removido (status PENDING, DONE ou ERROR).
+ * - `processing`: em PROCESSING; não pode ser removido (créditos já
+ *   debitados e Gemini possivelmente em execução).
+ * - `not-found`: inexistente ou de outro usuário.
+ */
+export type RemoveResult = 'deleted' | 'processing' | 'not-found';
+
+/** Campos da requisição que definem "o mesmo pedido" para idempotência. */
+type CreateFingerprint = {
+  originalImagePath: string;
+  prompt: string | null;
+  presetId: string;
+};
+
+function isUniqueViolation(err: unknown): boolean {
+  return (
+    err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002'
+  );
+}
+
+/** Chave vazia é tratada como ausente (não participa da idempotência). */
+function normalizeClientRequestId(value: string | undefined): string | null {
+  return value ? value : null;
+}
 
 function normalizeError(err: unknown): NormalizedError {
   // Error padrão (throw new Error)
@@ -145,6 +180,23 @@ export class RendersService {
     }
   }
 
+  /**
+   * Cria um render PENDING e o enfileira.
+   *
+   * Idempotência por `(userId, clientRequestId)` (índice UNIQUE no banco):
+   * - chave nova: cria e enfileira (um único job, jobId = renderId);
+   * - chave existente com o mesmo payload: devolve o render existente
+   *   (`replayed`), sem criar outro nem cobrar; se ainda PENDING, garante o
+   *   job (idempotente) — cobre retry do cliente após falha de enfileirar;
+   * - chave existente com payload diferente: 409 `IDEMPOTENCY_KEY_REUSED`;
+   * - requisições simultâneas com a mesma chave: o UNIQUE garante uma única
+   *   linha; quem perde recebe P2002 e cai no caminho de replay acima.
+   *
+   * O payload comparado é o efetivo (imagem resolvida pelo servidor, prompt,
+   * preset com default). Campos ignorados pelo servidor (`creditsToUse`,
+   * `originalImageUrl`, `originalImageMimeType`) não entram na comparação.
+   * Nada é debitado aqui: o débito ocorre no claim do worker.
+   */
   async create(
     userId: string,
     dto: CreateRenderDto,
@@ -153,49 +205,94 @@ export class RendersService {
       path: string;
       mimeType: string;
     },
-  ): Promise<Render> {
-    if (dto.clientRequestId) {
-      const existing = await this.prisma.render.findFirst({
-        where: { userId, clientRequestId: dto.clientRequestId },
-      });
-
-      if (existing) return existing;
-    }
-
+  ): Promise<CreateRenderResult> {
+    const clientRequestId = normalizeClientRequestId(dto.clientRequestId);
     const presetId: RenderPresetId = dto.presetId ?? 'daylight_9am';
     const preset = RENDER_PRESETS[presetId];
+    const fingerprint: CreateFingerprint = {
+      originalImagePath: originalImage.path,
+      prompt: dto.prompt ?? null,
+      presetId,
+    };
+
+    if (clientRequestId) {
+      const existing = await this.prisma.render.findFirst({
+        where: { userId, clientRequestId },
+      });
+
+      if (existing) return this.replayCreate(existing, fingerprint);
+    }
 
     await this.assertHasCredits(userId, this.getCreditsCost({ presetId }));
 
-    const render = await this.prisma.render.create({
-      data: {
-        userId,
-        originalImageUrl: originalImage.url,
-        originalImagePath: originalImage.path,
-        sourceImageMimeType: originalImage.mimeType,
-        prompt: dto.prompt ?? null,
-        presetId,
-        creditsUsed: 0,
-        clientRequestId: dto.clientRequestId ?? null,
-        status: RenderStatus.PENDING,
-        generatedImageUrl: null,
-        generatedImagePath: null,
-        providerModel: null,
-        outputImageMimeType: null,
-        events: {
-          create: {
-            type: RenderEventType.CREATED,
-            fromStatus: null,
-            toStatus: RenderStatus.PENDING,
-            message: `Render criado com preset ${preset.label}`,
+    let render: Render;
+    try {
+      render = await this.prisma.render.create({
+        data: {
+          userId,
+          originalImageUrl: originalImage.url,
+          originalImagePath: originalImage.path,
+          sourceImageMimeType: originalImage.mimeType,
+          prompt: fingerprint.prompt,
+          presetId,
+          creditsUsed: 0,
+          clientRequestId,
+          status: RenderStatus.PENDING,
+          generatedImageUrl: null,
+          generatedImagePath: null,
+          providerModel: null,
+          outputImageMimeType: null,
+          events: {
+            create: {
+              type: RenderEventType.CREATED,
+              fromStatus: null,
+              toStatus: RenderStatus.PENDING,
+              message: `Render criado com preset ${preset.label}`,
+            },
           },
         },
-      },
-    });
+      });
+    } catch (err: unknown) {
+      if (clientRequestId && isUniqueViolation(err)) {
+        // Outra requisição com a mesma chave inseriu primeiro.
+        const existing = await this.prisma.render.findFirst({
+          where: { userId, clientRequestId },
+        });
+        if (existing) return this.replayCreate(existing, fingerprint);
+      }
+      throw err;
+    }
 
     await this.enqueue(render);
 
-    return render;
+    return { render, replayed: false };
+  }
+
+  private async replayCreate(
+    existing: Render,
+    fingerprint: CreateFingerprint,
+  ): Promise<CreateRenderResult> {
+    const samePayload =
+      existing.originalImagePath === fingerprint.originalImagePath &&
+      (existing.prompt ?? null) === fingerprint.prompt &&
+      existing.presetId === fingerprint.presetId;
+
+    if (!samePayload) {
+      throw new ConflictException({
+        statusCode: 409,
+        error: 'Conflict',
+        code: IDEMPOTENCY_KEY_REUSED,
+        message:
+          'clientRequestId já utilizado com outro payload. Gere uma nova chave para um novo render.',
+      });
+    }
+
+    if (existing.status === RenderStatus.PENDING) {
+      // Idempotente (jobId = renderId); a execução é protegida pelo claim.
+      await this.enqueue(existing);
+    }
+
+    return { render: existing, replayed: true };
   }
 
   /**
@@ -263,9 +360,60 @@ export class RendersService {
     return this.prisma.render.findFirst({ where: { id, userId } });
   }
 
-  async remove(userId: string, id: string): Promise<boolean> {
-    const res = await this.prisma.render.deleteMany({ where: { id, userId } });
-    return res.count > 0;
+  /**
+   * Remove um render do usuário, exceto se estiver PROCESSING.
+   *
+   * Concorrência: o DELETE é condicional (`status <> PROCESSING`) e disputa o
+   * lock da linha com o claim (`UPDATE ... WHERE status = PENDING`):
+   * - DELETE primeiro: o claim atualiza 0 linhas -> `not-found`; nada é
+   *   debitado e o Gemini não é chamado;
+   * - claim primeiro: o DELETE reavalia o WHERE, vê PROCESSING e remove 0
+   *   linhas -> `processing` (409). O render segue e é cobrado normalmente.
+   *
+   * PENDING não tem débito, então pode ser removido. Depois do DELETE o job
+   * no BullMQ (jobId = renderId) é removido em melhor esforço; se não for
+   * possível (job já ativo, Redis fora), o worker encontra `not-found` no
+   * claim e termina sem efeito. O banco é a fonte da verdade.
+   */
+  async remove(userId: string, id: string): Promise<RemoveResult> {
+    // Duas tentativas: se o status mudou entre o DELETE e a leitura
+    // (ex.: PROCESSING -> DONE), tenta de novo uma vez.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const res = await this.prisma.render.deleteMany({
+        where: { id, userId, status: { not: RenderStatus.PROCESSING } },
+      });
+
+      if (res.count > 0) {
+        await this.removeQueuedJob(id);
+        return 'deleted';
+      }
+
+      const current = await this.prisma.render.findFirst({
+        where: { id, userId },
+        select: { status: true },
+      });
+
+      if (!current) return 'not-found';
+      if (current.status === RenderStatus.PROCESSING) return 'processing';
+    }
+
+    return 'processing';
+  }
+
+  private async removeQueuedJob(renderId: string): Promise<void> {
+    try {
+      const result = await removeRenderJob(renderId);
+      if (result === 'active') {
+        this.logger.log(
+          `Render ${renderId} deleted while its job was active; claim will find not-found`,
+        );
+      }
+    } catch (err: unknown) {
+      const e = normalizeError(err);
+      this.logger.warn(
+        `Could not remove queue job for deleted render=${renderId}: ${e.message}`,
+      );
+    }
   }
 
   /**

@@ -1,18 +1,22 @@
 jest.mock('../renders.queue', () => ({
   rendersQueue: { add: jest.fn() },
   enqueueRenderJob: jest.fn(),
+  removeRenderJob: jest.fn(),
 }));
 
-import { BadRequestException } from '@nestjs/common';
-import { RenderEventType, RenderStatus } from '@prisma/client';
+import { BadRequestException, ConflictException } from '@nestjs/common';
+import { Prisma, RenderEventType, RenderStatus } from '@prisma/client';
 
 import { RendersService } from '../renders.service';
-import { enqueueRenderJob } from '../renders.queue';
+import { enqueueRenderJob, removeRenderJob } from '../renders.queue';
 import { PrismaService } from '../../../database/prisma/prisma.service';
 import { RENDER_ID, USER_A } from './sandbox.helper-spec';
 
 const enqueueMock = enqueueRenderJob as jest.MockedFunction<
   typeof enqueueRenderJob
+>;
+const removeJobMock = removeRenderJob as jest.MockedFunction<
+  typeof removeRenderJob
 >;
 
 /**
@@ -29,6 +33,7 @@ describe('RendersService (unit)', () => {
       create: jest.fn(),
       update: jest.fn(),
       updateMany: jest.fn(),
+      deleteMany: jest.fn(),
     },
     renderEvent: { create: jest.fn() },
     creditTransaction: { create: jest.fn() },
@@ -61,13 +66,14 @@ describe('RendersService (unit)', () => {
       prisma.user.findUnique.mockResolvedValue({ credits: 5 });
       enqueueMock.mockResolvedValue('added');
 
-      const render = await service.create(
+      const { render, replayed } = await service.create(
         USER_A,
         { originalImagePath: originalImage.path },
         originalImage,
       );
 
       expect(render.id).toBe(RENDER_ID);
+      expect(replayed).toBe(false);
       expect(enqueueMock).toHaveBeenCalledTimes(1);
       expect(enqueueMock).toHaveBeenCalledWith({
         renderId: RENDER_ID,
@@ -97,7 +103,7 @@ describe('RendersService (unit)', () => {
       prisma.user.findUnique.mockResolvedValue({ credits: 5 });
       enqueueMock.mockRejectedValue(new Error('ECONNREFUSED redis'));
 
-      const render = await service.create(
+      const { render } = await service.create(
         USER_A,
         { originalImagePath: originalImage.path },
         originalImage,
@@ -113,19 +119,222 @@ describe('RendersService (unit)', () => {
       expect(prisma.user.updateMany).not.toHaveBeenCalled();
     });
 
-    it('clientRequestId repetido devolve o render existente sem novo job', async () => {
-      const existing = { id: RENDER_ID, userId: USER_A };
+    const existingFor = (over: Record<string, unknown> = {}) => ({
+      id: RENDER_ID,
+      userId: USER_A,
+      status: RenderStatus.DONE,
+      originalImagePath: originalImage.path,
+      prompt: null,
+      presetId: 'daylight_9am',
+      clientRequestId: 'req-1',
+      ...over,
+    });
+
+    it('clientRequestId repetido (mesmo payload) devolve o existente sem novo render, job ou débito', async () => {
+      const existing = existingFor();
       prisma.render.findFirst.mockResolvedValue(existing);
 
-      const render = await service.create(
+      const res = await service.create(
         USER_A,
         { originalImagePath: originalImage.path, clientRequestId: 'req-1' },
         originalImage,
       );
 
-      expect(render).toBe(existing);
+      expect(res).toEqual({ render: existing, replayed: true });
+      expect(prisma.render.findFirst).toHaveBeenCalledWith({
+        where: { userId: USER_A, clientRequestId: 'req-1' },
+      });
       expect(prisma.render.create).not.toHaveBeenCalled();
+      expect(prisma.user.findUnique).not.toHaveBeenCalled();
       expect(enqueueMock).not.toHaveBeenCalled();
+    });
+
+    it('replay de render ainda PENDING garante o job (idempotente)', async () => {
+      prisma.render.findFirst.mockResolvedValue(
+        existingFor({ status: RenderStatus.PENDING }),
+      );
+      enqueueMock.mockResolvedValue('already-queued');
+
+      const res = await service.create(
+        USER_A,
+        { originalImagePath: originalImage.path, clientRequestId: 'req-1' },
+        originalImage,
+      );
+
+      expect(res.replayed).toBe(true);
+      expect(enqueueMock).toHaveBeenCalledWith({
+        renderId: RENDER_ID,
+        userId: USER_A,
+      });
+      expect(prisma.render.create).not.toHaveBeenCalled();
+    });
+
+    type Change = {
+      prompt?: string;
+      presetId?: 'blue_hour';
+      originalImagePath?: string;
+    };
+    it.each<[string, Change]>([
+      ['prompt', { prompt: 'outro' }],
+      ['preset', { presetId: 'blue_hour' }],
+      ['imagem', { originalImagePath: 'uploads/originals/y.png' }],
+    ])(
+      'mesma chave com %s diferente: 409 IDEMPOTENCY_KEY_REUSED, nada criado',
+      async (_label, change) => {
+        prisma.render.findFirst.mockResolvedValue(existingFor());
+        const img = {
+          ...originalImage,
+          path: change.originalImagePath ?? originalImage.path,
+        };
+
+        const err = await service
+          .create(
+            USER_A,
+            {
+              originalImagePath: img.path,
+              clientRequestId: 'req-1',
+              prompt: change.prompt,
+              presetId: change.presetId,
+            },
+            img,
+          )
+          .catch((e: unknown) => e);
+
+        expect(err).toBeInstanceOf(ConflictException);
+        expect(
+          ((err as ConflictException).getResponse() as { code: string }).code,
+        ).toBe('IDEMPOTENCY_KEY_REUSED');
+        expect(prisma.render.create).not.toHaveBeenCalled();
+        expect(enqueueMock).not.toHaveBeenCalled();
+      },
+    );
+
+    it('preset omitido equivale ao default (daylight_9am) na comparação', async () => {
+      prisma.render.findFirst.mockResolvedValue(existingFor());
+
+      const res = await service.create(
+        USER_A,
+        {
+          originalImagePath: originalImage.path,
+          clientRequestId: 'req-1',
+          presetId: 'daylight_9am',
+        },
+        originalImage,
+      );
+      expect(res.replayed).toBe(true);
+    });
+
+    it('corrida: INSERT perde no UNIQUE (P2002) e devolve o vencedor sem enfileirar de novo', async () => {
+      const winner = existingFor();
+      prisma.render.findFirst
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(winner);
+      prisma.user.findUnique.mockResolvedValue({ credits: 5 });
+      prisma.render.create.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError('unique', {
+          code: 'P2002',
+          clientVersion: 'x',
+        }),
+      );
+
+      const res = await service.create(
+        USER_A,
+        { originalImagePath: originalImage.path, clientRequestId: 'req-1' },
+        originalImage,
+      );
+
+      expect(res).toEqual({ render: winner, replayed: true });
+      expect(enqueueMock).not.toHaveBeenCalled();
+    });
+
+    it('P2002 sem clientRequestId não é mascarado', async () => {
+      prisma.user.findUnique.mockResolvedValue({ credits: 5 });
+      const p2002 = new Prisma.PrismaClientKnownRequestError('unique', {
+        code: 'P2002',
+        clientVersion: 'x',
+      });
+      prisma.render.create.mockRejectedValue(p2002);
+
+      await expect(
+        service.create(
+          USER_A,
+          { originalImagePath: originalImage.path },
+          originalImage,
+        ),
+      ).rejects.toBe(p2002);
+    });
+
+    it('clientRequestId vazio é tratado como ausente', async () => {
+      prisma.user.findUnique.mockResolvedValue({ credits: 5 });
+      enqueueMock.mockResolvedValue('added');
+
+      await service.create(
+        USER_A,
+        { originalImagePath: originalImage.path, clientRequestId: '' },
+        originalImage,
+      );
+
+      expect(prisma.render.findFirst).not.toHaveBeenCalled();
+      expect(prisma.render.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ clientRequestId: null }) as unknown,
+      });
+    });
+  });
+
+  describe('remove', () => {
+    it('DELETE é condicional a status != PROCESSING e remove o job da fila', async () => {
+      prisma.render.deleteMany.mockResolvedValue({ count: 1 });
+      removeJobMock.mockResolvedValue('removed');
+
+      await expect(service.remove(USER_A, RENDER_ID)).resolves.toBe('deleted');
+
+      expect(prisma.render.deleteMany).toHaveBeenCalledWith({
+        where: {
+          id: RENDER_ID,
+          userId: USER_A,
+          status: { not: RenderStatus.PROCESSING },
+        },
+      });
+      expect(removeJobMock).toHaveBeenCalledWith(RENDER_ID);
+    });
+
+    it('PROCESSING: não remove nem mexe na fila', async () => {
+      prisma.render.deleteMany.mockResolvedValue({ count: 0 });
+      prisma.render.findFirst.mockResolvedValue({
+        status: RenderStatus.PROCESSING,
+      });
+
+      await expect(service.remove(USER_A, RENDER_ID)).resolves.toBe(
+        'processing',
+      );
+      expect(removeJobMock).not.toHaveBeenCalled();
+    });
+
+    it('inexistente/de outro usuário: not-found', async () => {
+      prisma.render.deleteMany.mockResolvedValue({ count: 0 });
+      prisma.render.findFirst.mockResolvedValue(null);
+
+      await expect(service.remove(USER_A, RENDER_ID)).resolves.toBe(
+        'not-found',
+      );
+    });
+
+    it('status mudou entre DELETE e leitura (PROCESSING -> DONE): tenta de novo', async () => {
+      prisma.render.deleteMany
+        .mockResolvedValueOnce({ count: 0 })
+        .mockResolvedValueOnce({ count: 1 });
+      prisma.render.findFirst.mockResolvedValue({ status: RenderStatus.DONE });
+      removeJobMock.mockResolvedValue('absent');
+
+      await expect(service.remove(USER_A, RENDER_ID)).resolves.toBe('deleted');
+      expect(prisma.render.deleteMany).toHaveBeenCalledTimes(2);
+    });
+
+    it('falha do Redis ao remover o job não falha a exclusão (worker vê not-found)', async () => {
+      prisma.render.deleteMany.mockResolvedValue({ count: 1 });
+      removeJobMock.mockRejectedValue(new Error('ECONNREFUSED'));
+
+      await expect(service.remove(USER_A, RENDER_ID)).resolves.toBe('deleted');
     });
   });
 

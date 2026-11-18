@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Body,
+  ConflictException,
   Controller,
   DefaultValuePipe,
   Delete,
@@ -13,6 +14,7 @@ import {
   ParseUUIDPipe,
   Post,
   Query,
+  Res,
   UploadedFile,
   UseGuards,
   UseInterceptors,
@@ -35,6 +37,7 @@ import { CurrentUser } from '../../common/decorators/auth/current-user.decorator
 import { FileInterceptor } from '@nestjs/platform-express';
 import { EditRenderDto } from './dto/edit-render.dto';
 import { RenderStatus } from '@prisma/client';
+import type { Response } from 'express';
 
 type JwtPayload = { userId: string; email: string };
 
@@ -68,7 +71,11 @@ export class RendersController {
 
   @Post()
   @SwaggerCreateRender()
-  async create(@CurrentUser() user: JwtPayload, @Body() dto: CreateRenderDto) {
+  async create(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: CreateRenderDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
     // path, URL e MIME da imagem original são derivados pelo servidor a partir
     // de um upload do próprio usuário; `originalImageUrl` e
     // `originalImageMimeType` enviados pelo cliente são ignorados.
@@ -77,11 +84,15 @@ export class RendersController {
       dto.originalImagePath,
     );
 
-    const render = await this.rendersService.create(
+    const { render, replayed } = await this.rendersService.create(
       user.userId,
       dto,
       originalImage,
     );
+
+    // Mesmo status (201) e corpo no replay; o header permite ao cliente
+    // distinguir sem quebrar quem só verifica 2xx.
+    res.setHeader('Idempotent-Replayed', replayed ? 'true' : 'false');
 
     return toRenderResponse(render);
   }
@@ -186,8 +197,20 @@ export class RendersController {
     @CurrentUser() user: JwtPayload,
     @Param('id', new ParseUUIDPipe()) id: string,
   ) {
-    const ok = await this.rendersService.remove(user.userId, id);
-    if (!ok) throw new NotFoundException();
+    const result = await this.rendersService.remove(user.userId, id);
+
+    if (result === 'not-found') throw new NotFoundException();
+
+    if (result === 'processing') {
+      throw new ConflictException({
+        statusCode: 409,
+        error: 'Conflict',
+        code: 'RENDER_PROCESSING',
+        message:
+          'Render em processamento não pode ser removido. Aguarde a conclusão.',
+      });
+    }
+
     return { ok: true };
   }
 }

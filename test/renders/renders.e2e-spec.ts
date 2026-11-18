@@ -13,6 +13,7 @@ import { Render, RenderStatus } from '@prisma/client';
 import { AppModule } from '../../src/app.module';
 import { JwtAuthGuard } from '../../src/modules/auth/guards/jwt.guard';
 import { RendersService } from '../../src/modules/renders/renders.service';
+import { StorageService } from '../../src/modules/renders/storage.service';
 import { RenderResponse } from '../../src/modules/renders/dto/render-response.dto';
 
 type JwtUser = { userId: string; email: string };
@@ -88,6 +89,20 @@ describe('Renders (e2e)', () => {
 
   let rendersServiceMock: RendersServiceMock;
 
+  // O path/URL/MIME da imagem original são resolvidos pelo servidor a partir
+  // de um upload do próprio usuário (a validação real do filesystem é
+  // coberta em renders.controller.spec.ts e storage.service.spec.ts).
+  const ownPath =
+    'uploads/originals/u1/44444444-4444-4444-8444-444444444444.png';
+  const resolvedImage = {
+    path: ownPath,
+    url: `https://api.example.test/${ownPath}`,
+    mimeType: 'image/png',
+  };
+  const storageServiceMock = {
+    resolveUserOriginalImage: jest.fn(),
+  };
+
   beforeAll(async () => {
     rendersServiceMock = {
       create: jest.fn(),
@@ -104,6 +119,8 @@ describe('Renders (e2e)', () => {
       .useClass(FakeJwtGuard)
       .overrideProvider(RendersService)
       .useValue(rendersServiceMock)
+      .overrideProvider(StorageService)
+      .useValue(storageServiceMock)
       .compile();
 
     app = moduleRef.createNestApplication();
@@ -126,6 +143,10 @@ describe('Renders (e2e)', () => {
     rendersServiceMock.findById.mockReset();
     rendersServiceMock.remove.mockReset();
     rendersServiceMock.enqueue.mockReset();
+    storageServiceMock.resolveUserOriginalImage.mockReset();
+    storageServiceMock.resolveUserOriginalImage.mockResolvedValue(
+      resolvedImage,
+    );
   });
 
   afterAll(async () => {
@@ -134,15 +155,24 @@ describe('Renders (e2e)', () => {
 
   it('POST /renders creates a render for the logged user', async () => {
     const payload = {
-      originalImageUrl: 'https://picsum.photos/200/300',
+      originalImagePath: ownPath,
+      // ignorado pelo servidor: a URL é derivada do path validado
+      originalImageUrl: 'https://evil.example/x.png',
       prompt: 'blue hour',
+      clientRequestId: 'req-1',
     };
 
-    rendersServiceMock.create.mockResolvedValue(
-      mockRender({
-        id: id1,
-        originalImageUrl: payload.originalImageUrl,
-        prompt: payload.prompt,
+    rendersServiceMock.create.mockImplementation((userId, _dto, img) =>
+      Promise.resolve({
+        render: mockRender({
+          id: id1,
+          userId,
+          originalImageUrl: img.url,
+          originalImagePath: img.path,
+          prompt: payload.prompt,
+          clientRequestId: payload.clientRequestId,
+        }),
+        replayed: false,
       }),
     );
 
@@ -151,16 +181,50 @@ describe('Renders (e2e)', () => {
       .send(payload)
       .expect(201);
 
-    expect(rendersServiceMock.create).toHaveBeenCalledWith('u1', {
-      originalImageUrl: payload.originalImageUrl,
-      prompt: payload.prompt,
-    });
+    expect(storageServiceMock.resolveUserOriginalImage).toHaveBeenCalledWith(
+      'u1',
+      ownPath,
+    );
+    expect(rendersServiceMock.create).toHaveBeenCalledWith(
+      'u1',
+      expect.objectContaining({
+        originalImagePath: ownPath,
+        prompt: payload.prompt,
+        clientRequestId: 'req-1',
+      }),
+      resolvedImage,
+    );
+    expect(res.headers['idempotent-replayed']).toBe('false');
 
     const body = bodyAs<RenderResponse>(res);
     expect(body.id).toBe(id1);
     expect(body.userId).toBe('u1');
-    expect(body.originalImageUrl).toBe(payload.originalImageUrl);
+    expect(body.originalImageUrl).toBe(resolvedImage.url);
     expect(body.prompt).toBe(payload.prompt);
+  });
+
+  it('POST /renders without originalImagePath returns 400 (no render created)', async () => {
+    await request(server)
+      .post('/renders')
+      .send({ originalImageUrl: 'https://picsum.photos/200/300' })
+      .expect(400);
+
+    expect(rendersServiceMock.create).not.toHaveBeenCalled();
+  });
+
+  it('POST /renders replay returns the same render with Idempotent-Replayed: true', async () => {
+    rendersServiceMock.create.mockResolvedValue({
+      render: mockRender({ id: id1, clientRequestId: 'req-1' }),
+      replayed: true,
+    });
+
+    const res = await request(server)
+      .post('/renders')
+      .send({ originalImagePath: ownPath, clientRequestId: 'req-1' })
+      .expect(201);
+
+    expect(res.headers['idempotent-replayed']).toBe('true');
+    expect(bodyAs<RenderResponse>(res).id).toBe(id1);
   });
 
   it('GET /renders lists only renders of the logged user (pagination)', async () => {
@@ -214,7 +278,7 @@ describe('Renders (e2e)', () => {
   });
 
   it('DELETE /renders/:id returns 200 when removed', async () => {
-    rendersServiceMock.remove.mockResolvedValue(true);
+    rendersServiceMock.remove.mockResolvedValue('deleted');
 
     const res = await request(server).delete(`/renders/${id1}`).expect(200);
 
@@ -223,11 +287,19 @@ describe('Renders (e2e)', () => {
   });
 
   it('DELETE /renders/:id returns 404 when render does not exist', async () => {
-    rendersServiceMock.remove.mockResolvedValue(false);
+    rendersServiceMock.remove.mockResolvedValue('not-found');
 
     await request(server).delete(`/renders/${idMissing}`).expect(404);
 
     expect(rendersServiceMock.remove).toHaveBeenCalledWith('u1', idMissing);
+  });
+
+  it('DELETE /renders/:id returns 409 while the render is PROCESSING', async () => {
+    rendersServiceMock.remove.mockResolvedValue('processing');
+
+    const res = await request(server).delete(`/renders/${id1}`).expect(409);
+
+    expect((res.body as { code: string }).code).toBe('RENDER_PROCESSING');
   });
 
   type ProcessResponse = RenderResponse;
