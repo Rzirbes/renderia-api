@@ -45,6 +45,11 @@ function assertSafeUrl(raw: string) {
   }
 }
 
+// No CI a suíte nunca pode ser pulada silenciosamente (verde com 0 testes).
+if (!IT_URL && process.env.CI === 'true') {
+  throw new Error('RENDERS_IT_DATABASE_URL is required in CI');
+}
+
 const describeIt = IT_URL ? describe : describe.skip;
 
 // PNG mínimo (assinatura + bytes) — suficiente para detecção por magic bytes.
