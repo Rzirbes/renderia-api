@@ -7,6 +7,7 @@ import request from 'supertest';
 import { Server } from 'http';
 import {
   CanActivate,
+  ConflictException,
   ExecutionContext,
   INestApplication,
   ValidationPipe,
@@ -53,6 +54,7 @@ describe('RendersController (HTTP) — imagem original controlada pelo servidor'
     create: jest.fn(),
     findById: jest.fn(),
     enqueue: jest.fn(),
+    remove: jest.fn(),
   };
   const renderProcessor = { processRender: jest.fn() };
   const ownPath = `uploads/originals/${USER_A}/${FILE_ID}.png`;
@@ -96,24 +98,27 @@ describe('RendersController (HTTP) — imagem original controlada pelo servidor'
     await writeFile(join(sandbox.root, ownPath), PNG_BYTES);
     rendersService.create.mockImplementation(
       (userId: string, _dto: unknown, img: { url: string }) => ({
-        id: RENDER_ID,
-        userId,
-        originalImageUrl: img.url,
-        generatedImageUrl: null,
-        prompt: null,
-        status: RenderStatus.PENDING,
-        creditsUsed: 0,
-        traceId: null,
-        clientRequestId: null,
-        providerJobId: null,
-        providerRequestId: null,
-        startedAt: null,
-        completedAt: null,
-        failedAt: null,
-        errorCode: null,
-        errorMessage: null,
-        createdAt: now,
-        updatedAt: now,
+        replayed: false,
+        render: {
+          id: RENDER_ID,
+          userId,
+          originalImageUrl: img.url,
+          generatedImageUrl: null,
+          prompt: null,
+          status: RenderStatus.PENDING,
+          creditsUsed: 0,
+          traceId: null,
+          clientRequestId: null,
+          providerJobId: null,
+          providerRequestId: null,
+          startedAt: null,
+          completedAt: null,
+          failedAt: null,
+          errorCode: null,
+          errorMessage: null,
+          createdAt: now,
+          updatedAt: now,
+        },
       }),
     );
   });
@@ -265,6 +270,74 @@ describe('RendersController (HTTP) — imagem original controlada pelo servidor'
       rendersService.findById.mockResolvedValue(null);
       await request(server).post(`/renders/${RENDER_ID}/process`).expect(404);
       expect(rendersService.enqueue).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /renders — idempotência (header Idempotent-Replayed)', () => {
+    it('criação nova: 201 e Idempotent-Replayed: false', async () => {
+      const res = await request(server)
+        .post('/renders')
+        .send({ originalImagePath: ownPath, clientRequestId: 'req-1' })
+        .expect(201);
+      expect(res.headers['idempotent-replayed']).toBe('false');
+    });
+
+    it('replay: mesmo 201 e corpo, Idempotent-Replayed: true', async () => {
+      const base = rendersService.create.getMockImplementation()!;
+      rendersService.create.mockImplementation((...args: unknown[]) => ({
+        ...(base(...args) as object),
+        replayed: true,
+      }));
+
+      const res = await request(server)
+        .post('/renders')
+        .send({ originalImagePath: ownPath, clientRequestId: 'req-1' })
+        .expect(201);
+      expect(res.headers['idempotent-replayed']).toBe('true');
+      expect((res.body as { id: string }).id).toBe(RENDER_ID);
+    });
+
+    it('mesma chave com payload diferente: 409 IDEMPOTENCY_KEY_REUSED', async () => {
+      rendersService.create.mockRejectedValue(
+        new ConflictException({
+          statusCode: 409,
+          error: 'Conflict',
+          code: 'IDEMPOTENCY_KEY_REUSED',
+          message: 'x',
+        }),
+      );
+
+      const res = await request(server)
+        .post('/renders')
+        .send({ originalImagePath: ownPath, clientRequestId: 'req-1' })
+        .expect(409);
+      expect((res.body as { code: string }).code).toBe(
+        'IDEMPOTENCY_KEY_REUSED',
+      );
+    });
+  });
+
+  describe('DELETE /renders/:id', () => {
+    it('PROCESSING: 409 RENDER_PROCESSING', async () => {
+      rendersService.remove.mockResolvedValue('processing');
+      const res = await request(server)
+        .delete(`/renders/${RENDER_ID}`)
+        .expect(409);
+      expect((res.body as { code: string }).code).toBe('RENDER_PROCESSING');
+      expect(rendersService.remove).toHaveBeenCalledWith(USER_A, RENDER_ID);
+    });
+
+    it('removido: 200 { ok: true }', async () => {
+      rendersService.remove.mockResolvedValue('deleted');
+      const res = await request(server)
+        .delete(`/renders/${RENDER_ID}`)
+        .expect(200);
+      expect(res.body).toEqual({ ok: true });
+    });
+
+    it('inexistente/de outro usuário: 404', async () => {
+      rendersService.remove.mockResolvedValue('not-found');
+      await request(server).delete(`/renders/${RENDER_ID}`).expect(404);
     });
   });
 

@@ -14,8 +14,21 @@ export function SwaggerRendersController() {
 
 export function SwaggerCreateRender() {
   return applyDecorators(
-    ApiOperation({ summary: 'Cria um render para o usuário logado' }),
-    ApiResponse({ status: 201, description: 'Render criado com sucesso' }),
+    ApiOperation({
+      summary: 'Cria um render para o usuário logado',
+      description:
+        'Idempotente por clientRequestId (por usuário): repetir a mesma chave com o mesmo payload devolve o render já criado (header Idempotent-Replayed: true), sem novo job nem cobrança.',
+    }),
+    ApiResponse({
+      status: 201,
+      description:
+        'Render criado (ou replay da mesma chave; ver header Idempotent-Replayed)',
+    }),
+    ApiResponse({
+      status: 409,
+      description:
+        'IDEMPOTENCY_KEY_REUSED: clientRequestId já usado com outro payload',
+    }),
   );
 }
 
@@ -41,8 +54,16 @@ export function SwaggerDeleteRender() {
   return applyDecorators(
     ApiOperation({ summary: 'Remove um render por id' }),
     ApiParam({ name: 'id', type: String, format: 'uuid' }),
-    ApiResponse({ status: 200, description: 'Render removido' }),
+    ApiResponse({
+      status: 200,
+      description: 'Render removido (PENDING, DONE ou ERROR)',
+    }),
     ApiResponse({ status: 404, description: 'Render não encontrado' }),
+    ApiResponse({
+      status: 409,
+      description:
+        'RENDER_PROCESSING: render em processamento não pode ser removido',
+    }),
   );
 }
 

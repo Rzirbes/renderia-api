@@ -37,12 +37,10 @@ describe('Auth (e2e)', () => {
   const authServiceMock = {
     register: jest.fn(),
     login: jest.fn(),
+    me: jest.fn(),
   };
 
   beforeAll(async () => {
-    process.env.JWT_SECRET = 'test-secret';
-    process.env.DATABASE_URL = 'postgresql://user:pass@localhost:5432/testdb';
-
     const moduleRef = await Test.createTestingModule({
       imports: [AppModule],
     })
@@ -99,9 +97,22 @@ describe('Auth (e2e)', () => {
     expect(authServiceMock.register).toHaveBeenCalledWith(payload);
   });
 
-  it('GET /auth/me returns current user', async () => {
+  it('GET /auth/me returns the current user loaded by AuthService.me', async () => {
+    // O endpoint devolve o usuário do banco (com créditos), não o payload
+    // do JWT.
+    const user = {
+      id: 'u1',
+      name: 'Rômulo',
+      email: 'romulo@test.com',
+      credits: 3,
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    authServiceMock.me.mockResolvedValue({ user });
+
     const res = await request(app.getHttpServer()).get('/auth/me').expect(200);
-    expect(res.body).toEqual({ userId: 'u1', email: 'romulo@test.com' });
+
+    expect(authServiceMock.me).toHaveBeenCalledWith('u1');
+    expect(res.body).toEqual({ user });
   });
 
   it('POST /auth/register returns 400 for invalid email', async () => {
